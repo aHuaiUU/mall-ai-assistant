@@ -1,0 +1,54 @@
+server:
+  port: 9090
+
+spring:
+  application:
+    name: ai-service
+
+  # 把 .env 当成 properties 载入（KEY=VALUE 格式兼容）。
+  # optional: 前缀保证 .env 不存在时也能启动，不报 FileNotFound。
+  config:
+    import: optional:file:.env[.properties]
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DB}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      # 启动时不去连库：建库脚本还没跑的时候也能先把服务拉起来
+      initialization-fail-timeout: -1
+
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            # 调 hmall 的超时：连接 1s、读取 3s，超时即视为工具失败（见 docs-architecture 4.3）
+            connect-timeout: 1000
+            read-timeout: 3000
+            # basic 会打印「方法 URL 状态码 耗时」，联调第 1 步时最有用
+            logger-level: basic
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# hmall 服务地址。第 1 步用 url 直连，不接 Nacos；
+# 第 4 步工具化时如果 hmall 走注册中心，再换成 spring.cloud.openfeign.client.config 的 serviceId 形式。
+hmall:
+  item-service:
+    url: ${HMALL_ITEM_URL:http://127.0.0.1:8081}
+  trade-service:
+    url: ${HMALL_TRADE_URL:http://127.0.0.1:8085}
+
+logging:
+  level:
+    com.mall.ai.client: DEBUG

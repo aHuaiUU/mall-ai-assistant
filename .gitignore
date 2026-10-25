@@ -1,0 +1,28 @@
+# 凭据：绝不进仓库。KEY 进过 Git 历史就只能轮换，删掉文件没用
+.env
+.env.*
+!.env.example
+
+# 构建产物
+target/
+build/
+*.jar
+*.war
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# 日志
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
