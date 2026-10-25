@@ -5,14 +5,19 @@ import com.mall.ai.dto.ItemDTO;
 import com.mall.ai.dto.PageDTO;
 import com.mall.ai.mapper.KbChunkMapper;
 import com.mall.ai.mapper.KbDocumentMapper;
+import com.mall.ai.reader.DocumentReaderFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.document.Document;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +39,44 @@ public class DevProbeController {
     private final ItemClient itemClient;
     private final KbDocumentMapper kbDocumentMapper;
     private final KbChunkMapper kbChunkMapper;
+    private final DocumentReaderFactory documentReaderFactory;
+
+    /**
+     * 检查点 1：解析。上传一个文件，看抽出来的文本长什么样。
+     *
+     * <p>为什么先做这个而不是先做切分：切分策略取决于真实文本形态。
+     * PDF 抽出来有没有页眉页脚、md 的 {@code ##} 标题还在不在、中文有没有乱码——
+     * 这些不看一眼就设计切分器，是空想。
+     *
+     * <p>返回里刻意带上「结构统计」：行数、空行数、以 # 开头的标题数。
+     * 商品目录如果标题数和商品数对得上，说明 md 结构完整、可以按标题切。
+     */
+    @PostMapping("/parse")
+    public Map<String, Object> parse(@RequestParam("file") MultipartFile file) {
+        long start = System.currentTimeMillis();
+        List<Document> documents = documentReaderFactory.read(file.getResource(), file.getOriginalFilename());
+
+        String text = documents.stream().map(Document::getText).collect(Collectors.joining("\n"));
+        String[] lines = text.split("\n", -1);
+        long blankLines = Arrays.stream(lines).filter(String::isBlank).count();
+        long headingLines = Arrays.stream(lines).filter(l -> l.startsWith("#")).count();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("filename", file.getOriginalFilename());
+        result.put("sizeBytes", file.getSize());
+        result.put("documentCount", documents.size());
+        result.put("chars", text.length());
+        // 按字符估 token：中文 1 字≈1 token 偏保守；这个字段只用于控制上下文长度，不需要精确
+        result.put("approxTokens", text.length());
+        result.put("lines", lines.length);
+        result.put("blankLines", blankLines);
+        result.put("headingLines", headingLines);
+        result.put("costMs", System.currentTimeMillis() - start);
+        result.put("preview", text.length() > 600 ? text.substring(0, 600) : text);
+        log.info("parse probe: file={} docs={} chars={} lines={} headings={}",
+                file.getOriginalFilename(), documents.size(), text.length(), lines.length, headingLines);
+        return result;
+    }
 
     /**
      * 验证 mall_ai 库连通与两张知识库表可用。
