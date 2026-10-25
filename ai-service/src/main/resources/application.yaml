@@ -42,13 +42,12 @@ mybatis-plus:
       logic-not-delete-value: 0
 
 # hmall 服务地址。第 1 步用 url 直连，不接 Nacos（Nacos 在课程虚拟机上，起不来就没有 hmall）。
-# 端口以各服务的 bootstrap.yaml 为准：item-service 写的是 8082（不是 application.yaml 里的 8081）。
+# 端口以实测为准：item-service 实际监听 8081（application.yaml 覆盖了 bootstrap.yaml 里的 8082），
+# 启动日志：Tomcat started on port(s): 8081。
 hmall:
   item-service:
-    url: ${HMALL_ITEM_URL:http://127.0.0.1:8082}
+    url: ${HMALL_ITEM_URL:http://127.0.0.1:8081}
   trade-service:
-    # trade-service 的 bootstrap.yaml 也写着 8082，和 item-service 撞端口；
-    # 起之前把它改成 8085（或改这里），两个服务才能同时跑。
     url: ${HMALL_TRADE_URL:http://127.0.0.1:8085}
 
 logging:

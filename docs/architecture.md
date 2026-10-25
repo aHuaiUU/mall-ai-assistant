@@ -257,38 +257,50 @@ DELETE /api/knowledge/{docId}                         # 逻辑删除并清理向
 
 `code` 约定：`0` 成功；`4xx` 客户端错误；`50001` 文档解析失败；`50002` 向量化失败；`50003` 模型不可用。
 
-### 4.3 对内：AI 层调 hmall（**待验证**）
+### 4.3 对内：AI 层调 hmall（**已核对源码 + 已实测**）
 
-> 路径需与 hmall 现有 Controller 对齐，实现时以实际接口为准。
+> 2026.10 按 `F:\File\JavaWord\hmall` 源码逐行核对，并用真实 item-service 打通验证。
+> 下面这份是**实际契约**，与初版设计稿差异很大，以本节为准。
 
 ```java
-@FeignClient(name = "item-service", configuration = FeignConfig.class)
+// 实测通过：GET http://127.0.0.1:8081/search/list?key=RIMOWA → total=37
+@FeignClient(name = "hmall-item-service", url = "${hmall.item-service.url}")
 public interface ItemClient {
 
-    // 商品检索：按关键词 + 价格上限，返回最多 limit 条
-    @GetMapping("/items/search")
-    Result<List<ItemVO>> search(@RequestParam String keyword,
-                                @RequestParam(required = false) Long maxPrice,
-                                @RequestParam(defaultValue = "10") Integer limit);
+    PageDTO<ItemDTO> search(String key, String category, String brand,
+                            Integer minPrice, Integer maxPrice,
+                            Integer pageNo, Integer pageSize);   // 全部 @RequestParam
 
-    // 库存查询
-    @GetMapping("/items/{id}/stock")
-    Result<Integer> stock(@PathVariable Long id);
-}
-
-@FeignClient(name = "trade-service", configuration = FeignConfig.class)
-public interface TradeClient {
-
-    // 订单状态（只读，需带 user-info 头）
-    @GetMapping("/orders/{orderId}")
-    Result<OrderVO> detail(@PathVariable Long orderId);
+    ItemDTO detail(@PathVariable("id") Long id);                // 含库存
 }
 ```
 
+**六处与初版设计稿不一致的地方（都会导致「调通但结果是错的」）**
+
+| 初版设计稿 | 实际情况 |
+|---|---|
+| 类名 `Result<T>`，成功码 `0` | hmall 是 `R<T>`，成功码 **200**；且 item/trade 的 Controller **不返回 `R` 包装**，直接返回裸 DTO |
+| 路径 `/items/search` | 不存在。搜索是 `GET /search/list`，参数 `key/category/brand/minPrice/maxPrice/pageNo/pageSize` |
+| 单独接口 `/items/{id}/stock` | 不存在。库存就在 `GET /items/{id}` 的 `ItemDTO.stock` 里，**不需要改 hmall** |
+| 返回 `List<ItemVO>` | `PageDTO<ItemDTO>`：`total` / `pages` / `list`，且 `total`、`pages`、`id` 被序列化成**字符串** |
+| 端口 8081 / 8085 | item-service 实测 8081（`application.yaml` 覆盖了 `bootstrap.yaml` 里的 8082） |
+| 需带 `user-info` 头 | 不需要。`UserInforInterceptor` 是「有就 set、没有也放行」，item/trade 接口不读 `UserContext` |
+
+**三个必须写进代码的坑**
+
+1. **价格单位是「分」**。库里 88,475 条商品的 `price` 全是分，`28900` = 289 元。工具层不除以 100，模型会把「28900 元」报给用户。
+2. **只传 `maxPrice` 会返回 0 条**（hmall 的 bug）。`SearchController` 里是
+   `.between(query.getMaxPrice() != null, Item::getPrice, minPrice, maxPrice)`，
+   只传上限时生成 `price BETWEEN NULL AND 50000`，SQL 恒为 NULL。实测：
+   `key=跑步鞋` 1178 条 → 加 `maxPrice` 0 条 → 加 `minPrice=0&maxPrice=50000` 596 条。
+   **AI 层传价格上限时必须同时传 `minPrice=0`。**
+3. **订单接口不校验归属**。`GET /orders/{id}` 是内部接口，谁拿到 orderId 都能查。
+   AI 层必须在工具里按当前 `userId` 过滤，否则等于给模型开了一个任意订单查询接口。
+
 **契约约束（已定）**
 
-- AI 层**只调用 GET 接口**，不调用任何写接口；
-- `limit` 必须由服务端兜底限制（上限 20），**不信任模型传进来的值**；
+- AI 层**只调用 GET 接口**，不调用任何写接口（`PUT /items/stock/deduct`、`POST /orders` 一律禁止）；
+- `pageSize` 必须由服务端兜底限制（上限 20），**不信任模型传进来的值**；
 - 调 hmall 的超时：连接 1s、读取 3s，超时即视为工具失败。
 
 ---

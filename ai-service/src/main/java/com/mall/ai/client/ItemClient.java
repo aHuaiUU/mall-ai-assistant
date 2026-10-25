@@ -32,6 +32,14 @@ public interface ItemClient {
      * 商品搜索。hmall 侧只返回 {@code status=1}（在售）的商品。
      *
      * <p>{@code pageSize} 是 hmall 的分页大小，AI 层调用时统一按工具参数上限 20 收口。
+     *
+     * <p><b>价格必须成对传</b>：hmall 的 {@code SearchController} 写的是
+     * {@code .between(query.getMaxPrice() != null, Item::getPrice, minPrice, maxPrice)}，
+     * 只传 {@code maxPrice} 会生成 {@code price BETWEEN NULL AND x}，SQL 恒为 NULL，返回 0 条。
+     * 实测：{@code key=跑步鞋} 1178 条 → 加 {@code maxPrice=50000} 变 0 条 →
+     * 补上 {@code minPrice=0} 回到 596 条。所以<b>只想限上限时也要传 {@code minPrice=0}</b>。
+     *
+     * <p>另注意价格单位是<b>分</b>：工具参数收「元」，进来先乘以 100。
      */
     @GetMapping("/search/list")
     PageDTO<ItemDTO> search(@RequestParam(value = "key", required = false) String key,

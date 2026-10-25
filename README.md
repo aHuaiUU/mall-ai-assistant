@@ -167,7 +167,7 @@ cd ai-service && mvn spring-boot:run
 | 架构设计与技术选型 | ✅ 完成 |
 | `mall_ai` 建库建表（5 张表） | ✅ 完成 |
 | ai-service 骨架（Boot 3.5.15 + JDK 21，可编译可启动） | ✅ 完成 |
-| OpenFeign 调通 hmall 商品接口 | 🚧 进行中 |
+| OpenFeign 调通 hmall 商品接口（已用真实 item-service 验证） | ✅ 完成 |
 | 商品知识库 RAG（解析 → 切分 → 向量化 → 检索） | 📋 计划 |
 | 工具调用（查商品 / 查库存 / 查订单） | 📋 计划 |
 | SSE 流式输出 + 会话记忆 | 📋 计划 |

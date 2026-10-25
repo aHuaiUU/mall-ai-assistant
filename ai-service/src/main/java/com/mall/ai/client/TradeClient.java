@@ -8,11 +8,12 @@ import org.springframework.web.bind.annotation.PathVariable;
 /**
  * 调 hmall trade-service 的<b>只读</b>接口。
  *
- * <p>契约来源：{@code trade-service/.../OrderController#queryOrderById}，返回裸 {@code OrderVO}。
+ * <p>契约来源：{@code trade-service/.../OrderController#queryOrderById}，返回裸 {@code OrderVO}，
+ * 不包 {@code R}。
  *
- * <p><b>端口坑</b>：trade-service 的 {@code bootstrap.yaml} 里也写着 {@code port: 8082}，
- * 和 item-service 撞端口，两个服务同时起必有一个失败。起之前先把
- * trade-service 的 bootstrap.yaml 改成 8085，否则这里配什么地址都连不上。
+ * <p>端口按 application.yaml 的 8085（实测 item-service 也是 application.yaml 覆盖了
+ * bootstrap.yaml 的 8082，起在 8081）。启动后确认日志里的
+ * {@code Tomcat started on port(s)} 再配地址。
  */
 @FeignClient(name = "hmall-trade-service", url = "${hmall.trade-service.url}")
 public interface TradeClient {
