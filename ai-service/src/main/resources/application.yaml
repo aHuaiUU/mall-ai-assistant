@@ -5,6 +5,13 @@ spring:
   application:
     name: ai-service
 
+  # 上传文件大小上限。默认 1MB 对 PDF 太紧（实测那份售后政策 337KB 没事，
+  # 但扫描件 PDF 动辄 5-10MB）
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
   # 把 .env 当成 properties 载入（KEY=VALUE 格式兼容）。
   # optional: 前缀保证 .env 不存在时也能启动，不报 FileNotFound。
   config:
@@ -86,6 +93,18 @@ hmall:
     url: ${HMALL_ITEM_URL:http://127.0.0.1:8081}
   trade-service:
     url: ${HMALL_TRADE_URL:http://127.0.0.1:8085}
+
+# ===== 知识入库参数 =====
+# 切分参数在第 8 步要用评测集扫，先给一个保守起点。
+# 实测依据：商品目录 128 字符/款 → 500 字约 3-4 款/块；售后政策归一化后约 9000 字 → 约 20 块/份
+ai:
+  ingest:
+    chunk-size: 500
+    overlap: 80
+    # 一次 add 太多会被上游 embedding 接口限流，20 是实测能稳定通过的批次
+    embed-batch-size: 20
+    # 同一份文档的入库锁；正常入库远小于 60s，给足余量防长时间 embedding 超时
+    lock-ttl-seconds: 60
 
 logging:
   level:
