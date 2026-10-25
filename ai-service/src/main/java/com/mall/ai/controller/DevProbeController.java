@@ -3,6 +3,8 @@ package com.mall.ai.controller;
 import com.mall.ai.client.ItemClient;
 import com.mall.ai.dto.ItemDTO;
 import com.mall.ai.dto.PageDTO;
+import com.mall.ai.mapper.KbChunkMapper;
+import com.mall.ai.mapper.KbDocumentMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +32,22 @@ import java.util.stream.Collectors;
 public class DevProbeController {
 
     private final ItemClient itemClient;
+    private final KbDocumentMapper kbDocumentMapper;
+    private final KbChunkMapper kbChunkMapper;
+
+    /**
+     * 验证 mall_ai 库连通与两张知识库表可用。
+     *
+     * <p>这张表建错（字段名、逻辑删除、唯一键）在第 2 步会表现为「入库成功但查不到」，
+     * 先用一次 count 把问题暴露出来，比后面查 bug 便宜。
+     */
+    @GetMapping("/db")
+    public Map<String, Object> db() {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("kbDocumentCount", kbDocumentMapper.selectCount(null));
+        result.put("kbChunkCount", kbChunkMapper.selectCount(null));
+        return result;
+    }
 
     @GetMapping("/search")
     public Map<String, Object> search(@RequestParam(value = "key", required = false) String key,
