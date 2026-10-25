@@ -79,6 +79,28 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- ===== Spring AI（第 2 步起使用，版本由 spring-ai-bom 管）===== -->
+
+        <!-- 模型接入：OpenAI 兼容协议。阿里云百炼 MaaS 走的就是 compatible-mode，
+             同一个 starter 同时提供 ChatModel 与 EmbeddingModel -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-model-openai</artifactId>
+        </dependency>
+
+        <!-- 向量库：Redis Stack（RediSearch），已确认版本 2.10.20 可用 -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-vector-store-redis</artifactId>
+        </dependency>
+
+        <!-- 文档解析：PDF / Word 走 Tika。它体积大（内嵌解析器），但换来的是
+             不用为每种格式各写一个 Reader -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-tika-document-reader</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

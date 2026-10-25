@@ -32,6 +32,43 @@ spring:
             # basic 会打印「方法 URL 状态码 耗时」，联调第 1 步时最有用
             logger-level: basic
 
+  # ===== Spring AI =====
+  ai:
+    openai:
+      # 阿里云百炼 MaaS 的 OpenAI 兼容入口。凭据只从 .env 读，不写死在这里。
+      base-url: ${OPENAI_BASE_URL}
+      api-key: ${OPENAI_API_KEY}
+      embedding:
+        options:
+          # 实测维度 1024（text-embedding-3-small 是 1536，别想当然）
+          model: ${EMBEDDING_MODEL:qwen3.7-text-embedding}
+      chat:
+        options:
+          # 第 3 步接对话模型时改这里
+          temperature: 0.3
+
+    vectorstore:
+      redis:
+        # 索引名和旧原型留下的 lee-vectorstore 分开，避免互相干扰
+        index-name: kb-vectorstore
+        # 前缀刻意不用 embedding:，和旧索引（JSON 类型 + embedding: 前缀）彻底错开
+        # 结尾的冒号是值的一部分，必须加引号，否则 SnakeYAML 会当成映射的冒号
+        prefix: "kb:embedding:"
+        # 首次启动自动 FT.CREATE 建索引
+        initialize-schema: true
+        # 注意：这里没有「维度」配置项。Spring AI 的 AbstractEmbeddingModel.dimensions()
+        # 会在建索引时探测维度——先查内置模型维度表，查不到就真的调一次 embedding 接口量长度，
+        # 实测本模型返回 1024，索引会按 1024 建。所以换 embedding 模型后
+        # 必须 FT.DROPINDEX 重建，否则新旧维度不一致，写入时才报错。
+
+  # ===== Redis Stack（向量库，端口 9379）=====
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD}
+      timeout: 3s
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true

@@ -190,24 +190,35 @@ CREATE TABLE tool_call_log (
 
 | 用途 | Key / 索引 | 类型 | TTL | 说明 |
 |---|---|---|---|---|
-| 向量库 | 索引 `kb-vectorstore`，key 前缀 `embedding:kb:` | HASH + 向量 | 无 | Spring AI RedisVectorStore 管理 |
+| 向量库 | 索引 `kb-vectorstore`，key 前缀 `kb:embedding:` | **JSON** + 向量 | 无 | Spring AI 1.0 的 RedisVectorStore 写 RedisJSON，不是 HASH |
 | 会话记忆 | `ai:memory:{sessionId}` | LIST | 24h | `MessageWindowChatMemory` 持久化 |
 | 问答缓存 | `ai:cache:qa:{questionHash}` | STRING | 1h | 相同问题直接命中，省 token |
 | 限流 | `ai:limit:{userId}:{分钟}` | STRING（INCR） | 60s | 每用户每分钟最多 N 次 |
 | 分布式锁 | `ai:lock:doc:{contentHash}` | STRING（SET NX PX） | 60s | 防止同一文档并发入库 |
 
-**建索引前必须确认的三件事**
+**已建成的索引（2026.10 实测 `FT.INFO kb-vectorstore`）**
 
-1. **同一个 Redis 上已经有一个旧索引 `lee-vectorstore`**（上个 SpringAI 原型的遗留，93 条数据）：
-   `key_type=JSON`、前缀 `embedding:`、HNSW / FLOAT32 / **dim 1024** / COSINE。
-   它只索引 **JSON 类型**的 key，而 Spring AI 的 RedisVectorStore 默认写 **HASH**，
-   两者不会互相污染。**但前提是我们保持 HASH 模式**——一旦为了别的功能改成 JSON 写入，
-   旧索引的 `embedding:` 前缀会把 `embedding:kb:*` 也吞进去，检索结果直接串味。
-   更稳的做法是把新前缀写成 `kb:embedding:`，和旧索引彻底错开。
-2. **`dim` 必须等于实际 embedding 模型的输出维度**。旧索引用的是 1024 维，
-   如果第 3 步换用输出维度不同的模型（如 1536 维），必须先删索引重建，
-   否则写入报 `Vector dimension mismatch`，而且这个错误只在下标时才暴露。
-3. **旧的 93 条数据要不要清**：`FT.DROPINDEX lee-vectorstore DD` 连索引带 key 一起删。
+```
+key_type=JSON   prefixes=kb:embedding:   algorithm=HNSW
+data_type=FLOAT32   dim=1024   distance_metric=COSINE   num_docs=0
+```
+
+**建索引的四个坑（都是踩过的）**
+
+1. **前缀必须和旧索引错开**。这个 Redis 上还留着上个原型建的 `lee-vectorstore`
+   （`key_type=JSON`、前缀 `embedding:`、dim 1024、93 条数据）。
+   因为它同样只索引 JSON 类型，所以只要新前缀是 `kb:embedding:` 就互不干扰；
+   **但一旦写成 `embedding:kb:`，旧索引会把我们的 key 一起吞进去**，检索结果串味。
+2. **维度不用手填，但换模型必须重建索引**。Spring AI 的
+   `AbstractEmbeddingModel.dimensions()` 在建索引时会探测维度——先查内置模型维度表，
+   查不到就真调一次 embedding 接口量长度（本项目实测 1024）。
+   换模型后如果维度变了，必须先 `FT.DROPINDEX kb-vectorstore DD` 再启动，
+   否则写入报 `Vector dimension mismatch`，而且只在下标时才暴露。
+3. **`base-url` 不能带 `/v1`**。Spring AI 自己会拼 `/v1/embeddings`，
+   填成 `.../compatible-mode/v1` 就会请求到 `.../v1/v1/embeddings`，启动时报
+   `HTTP 404 - No response body`，而且报错堆栈只指向 `RedisVectorStore.afterPropertiesSet`，
+   看起来像 Redis 的问题，其实是模型地址写错了。
+4. **旧的 93 条数据要不要清**：`FT.DROPINDEX lee-vectorstore DD` 连索引带 key 一起删。
    不清也不影响功能（占约 9MB 内存），但演示时 `FT._LIST` 里多一个索引不好看。
 
 ---
