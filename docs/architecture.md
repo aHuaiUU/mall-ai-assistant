@@ -185,6 +185,9 @@ CREATE TABLE tool_call_log (
 
 ### 3.2 Redis 结构
 
+> **实测环境（2026.10）**：`10.233.79.116:9379`（**端口是 9379，不是默认 6379**），
+> Redis 7.4.7 standalone，已加载 RediSearch **2.10.20**，满足 Spring AI RedisVectorStore 要求。
+
 | 用途 | Key / 索引 | 类型 | TTL | 说明 |
 |---|---|---|---|---|
 | 向量库 | 索引 `kb-vectorstore`，key 前缀 `embedding:kb:` | HASH + 向量 | 无 | Spring AI RedisVectorStore 管理 |
@@ -192,6 +195,20 @@ CREATE TABLE tool_call_log (
 | 问答缓存 | `ai:cache:qa:{questionHash}` | STRING | 1h | 相同问题直接命中，省 token |
 | 限流 | `ai:limit:{userId}:{分钟}` | STRING（INCR） | 60s | 每用户每分钟最多 N 次 |
 | 分布式锁 | `ai:lock:doc:{contentHash}` | STRING（SET NX PX） | 60s | 防止同一文档并发入库 |
+
+**建索引前必须确认的三件事**
+
+1. **同一个 Redis 上已经有一个旧索引 `lee-vectorstore`**（上个 SpringAI 原型的遗留，93 条数据）：
+   `key_type=JSON`、前缀 `embedding:`、HNSW / FLOAT32 / **dim 1024** / COSINE。
+   它只索引 **JSON 类型**的 key，而 Spring AI 的 RedisVectorStore 默认写 **HASH**，
+   两者不会互相污染。**但前提是我们保持 HASH 模式**——一旦为了别的功能改成 JSON 写入，
+   旧索引的 `embedding:` 前缀会把 `embedding:kb:*` 也吞进去，检索结果直接串味。
+   更稳的做法是把新前缀写成 `kb:embedding:`，和旧索引彻底错开。
+2. **`dim` 必须等于实际 embedding 模型的输出维度**。旧索引用的是 1024 维，
+   如果第 3 步换用输出维度不同的模型（如 1536 维），必须先删索引重建，
+   否则写入报 `Vector dimension mismatch`，而且这个错误只在下标时才暴露。
+3. **旧的 93 条数据要不要清**：`FT.DROPINDEX lee-vectorstore DD` 连索引带 key 一起删。
+   不清也不影响功能（占约 9MB 内存），但演示时 `FT._LIST` 里多一个索引不好看。
 
 ---
 
