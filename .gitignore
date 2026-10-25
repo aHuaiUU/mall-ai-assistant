@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 
+# 真实业务文档（公司内部资料，不进公开仓库）
+data/docs/
+*.pdf
+!docs/**/*.pdf
+
 # 构建产物
 target/
 build/

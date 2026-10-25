@@ -169,6 +169,7 @@ cd ai-service && mvn spring-boot:run
 | ai-service 骨架（Boot 3.5.15 + JDK 21，可编译可启动） | ✅ 完成 |
 | OpenFeign 调通 hmall 商品接口（已用真实 item-service 验证） | ✅ 完成 |
 | Spring AI 1.0 接入 + 向量库索引 `kb-vectorstore`（1024 维 / HNSW / COSINE） | ✅ 完成 |
+| 商品静态参数目录导出（休闲鞋 / 拉杆箱 / 手机 各 400 款，不含价格库存） | ✅ 完成 |
 | 商品知识库 RAG（解析 → 切分 → 向量化 → 检索） | 🚧 进行中 |
 | 工具调用（查商品 / 查库存 / 查订单） | 📋 计划 |
 | SSE 流式输出 + 会话记忆 | 📋 计划 |
