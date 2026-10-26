@@ -7,24 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 文本归一化：把「解析器吐出来的原始文本」变成「适合切分的干净文本」。
+ * 文本归一化：把解析器吐出的原始文本变成适合切分的干净文本。
  *
- * <p>为什么单独一层：切分策略和文本清洗是两个问题。混在一起，切分出问题时
- * 分不清是清洗错了还是切法错了，单测也没法拆开写。
+ * 处理三类实测问题：
  *
- * <p>这里修的是三个实测出来的具体问题（见 docs/pitfalls-and-interview.md）：
- * <ol>
- *   <li><b>PDF 每行后面插一个空行</b>：云米那份 11 页 PDF，1045 行里有 505 个空行（48%）。
- *       不处理就按空行切，会切出 505 个只有一行字的碎片。</li>
- *   <li><b>PDF 把一个词断在两行</b>：实测抽到「《中华人民共和国消费者权益保」+ 空行 +
- *       「护法》」，「保护法」这个词在向量库里就消失了，检索不到。
- *       中文不需要空格分词，直接拼接是安全的。</li>
- *   <li><b>行尾 CRLF</b>：md 文件是 {@code \r\n}，按 {@code \n} 切行后每行尾部残留
- *       {@code \r}，导致 {@code line.startsWith("## ")} 之类判断全部失败。</li>
- * </ol>
+ *   - PDF 每行后插一个空行（政策那份 1045 行有 505 个空行），按空行切会碎成一堆单行块；
+ *   - PDF 把词断在两行（「…权益保」+ 空行 +「护法》」），中文直接拼接可修复；
+ *   - 行尾 {@code \r}：{@code \r\n} 按 {@code \n} 切行后残留 {@code \r}，
+ *       会让 {@code startsWith("## ")} 之类判断失败。
  *
- * <p>反过来要保护的是 <b>Markdown 结构</b>：以 {@code #} / {@code -} / {@code >} / 数字序号
- * 开头的行是结构行，绝不能和上一行合并，否则商品目录就变成一坨没有边界的文字。
+ * 同时要保护 Markdown 结构：以 {@code #} / {@code -} / {@code >} / 数字序号开头的结构行
+ * 不与上一行合并，否则商品目录会失去边界。
  */
 @Slf4j
 @Component
@@ -38,6 +31,12 @@ public class TextNormalizer {
     /** 行尾是这些标点时，说明上一行语义已结束，不与下一行合并 */
     private static final String TERMINAL_PUNCTUATION = "。！？；：」』）】”’!?;:)]}>";
 
+    /**
+     * 统一换行符、合并被断开的中文行与连续空行，同时保留 Markdown 结构行。
+     *
+     * @param raw 解析器输出的原始文本
+     * @return 归一化后的文本；入参为空时返回空串
+     */
     public String normalize(String raw) {
         if (raw == null || raw.isBlank()) {
             return "";
@@ -47,18 +46,24 @@ public class TextNormalizer {
         String unified = raw.replace("\r\n", "\n").replace('\r', '\n');
 
         // 2) 逐行去尾空白，合并断行
+        // 2.1  -1：尽可能全部切割，并且 保留末尾的空字符串
         String[] lines = unified.split("\n", -1);
+        // 储存文本内容
         List<String> merged = new ArrayList<>(lines.length);
+
         for (String line : lines) {
+            // 2.2 去除空字符串
             String trimmed = stripTrailing(line);
             if (trimmed.isEmpty()) {
                 merged.add("");
                 continue;
             }
+            // 2.3 判断当前文本内容是否应该合并到上一轮文本
             if (shouldMergeWith(merged, trimmed)) {
-                int last = merged.size() - 1;
-                merged.set(last, joinLines(merged.get(last), trimmed.strip()));
+                // 2.3.1 合并到「最近的非空行」尾部，并跨过中间的空行
+                mergeIntoPrevious(merged, trimmed);
             } else {
+                // 2.3.1 无需合并直接添加
                 merged.add(trimmed.strip());
             }
         }
@@ -77,7 +82,7 @@ public class TextNormalizer {
                 lastBlank = false;
             }
         }
-
+        // 返回清洗后内容
         String result = sb.toString().strip();
         log.debug("归一化：{} 字符 -> {} 字符", raw.length(), result.length());
         return result;
@@ -86,26 +91,51 @@ public class TextNormalizer {
     /**
      * 判断当前行是否应该并到上一行。
      *
-     * <p>合并条件：上一行不是空行、且不是结构行、且不以句末标点结尾；
+     * 合并条件：上一行不是空行、且不是结构行、且不以句末标点结尾；
      * 当前行也不是结构行。四个条件同时满足才合并。
      */
     private boolean shouldMergeWith(List<String> merged, String currentLine) {
         if (merged.isEmpty()) {
             return false;
         }
-        String previous = merged.get(merged.size() - 1);
-        if (previous.isEmpty()) {
+        // 往回找最近的非空行。PDF 抽取的结果是「一行正文 + 一个空行」交替，
+        // 如果只看紧挨着的上一行，那永远是空行，merge 永远不成立，
+        // 整份 PDF 就会碎成一堆 40 字左右的段落。
+        int lastIdx = merged.size() - 1;
+        while (lastIdx >= 0 && merged.get(lastIdx).isEmpty()) {
+            lastIdx--;
+        }
+        if (lastIdx < 0) {
             return false;
         }
+        String previous = merged.get(lastIdx);
+        // 若以 "#", "- ", "* ", "+ ", ">", "|", "```", "    ", "\t" 和`1、` `2.` `3）` `(4)` `（5）` 开头false掉
         if (startsWithStructural(previous) || startsWithStructural(currentLine)) {
             return false;
         }
+        // 是否以。！？；：」』）】”’!?;:)]}>结尾false
         if (endsWithTerminal(previous)) {
             return false;
         }
         return true;
     }
 
+    /**
+     * 合并时要跨过中间的空行：把 currentLine 并到最近的非空行上，并丢掉中间的空串。
+     */
+    private void mergeIntoPrevious(List<String> merged, String currentLine) {
+        int lastIdx = merged.size() - 1;
+        while (lastIdx >= 0 && merged.get(lastIdx).isEmpty()) {
+            lastIdx--;
+        }
+        if (lastIdx < 0) {
+            merged.add(currentLine.strip());
+            return;
+        }
+        merged.subList(lastIdx + 1, merged.size()).clear();
+        merged.set(lastIdx, joinLines(merged.get(lastIdx), currentLine.strip()));
+    }
+    //判断是否"#", "- ", "* ", "+ ", ">", "|", "```", "    ", "\t" 和`1、` `2.` `3）` `(4)` `（5）` 开头
     private boolean startsWithStructural(String line) {
         for (String prefix : STRUCTURAL_PREFIXES) {
             if (line.startsWith(prefix)) {
@@ -116,6 +146,7 @@ public class TextNormalizer {
         return line.matches("^\\d+[、.．)）].*") || line.matches("^[（(]\\d+[)）].*");
     }
 
+    // 是否以。！？；：」』）】”’!?;:)]}>结尾
     private boolean endsWithTerminal(String line) {
         if (line.isEmpty()) {
             return false;
@@ -139,11 +170,12 @@ public class TextNormalizer {
         }
         return previous + current;
     }
-
+    // 判断 两段拼接中间是否有空格
     private boolean isAsciiWordChar(char c) {
         return c < 128 && (Character.isLetterOrDigit(c) || c == '-' || c == '_');
     }
 
+    //去除空白字符串
     private String stripTrailing(String line) {
         int end = line.length();
         while (end > 0 && (line.charAt(end - 1) == ' ' || line.charAt(end - 1) == '\t')) {
