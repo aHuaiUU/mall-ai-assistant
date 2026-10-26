@@ -10,7 +10,7 @@ import org.springframework.web.multipart.MaxUploadSizeExceededException;
 /**
  * 全局异常处理：把 {@link BizException} 转成统一响应体。
  *
- * <p>HTTP 状态统一 200，业务码放在 body 的 {@code code} 里——这是国内后端最常见的约定，
+ * HTTP 状态统一 200，业务码放在 body 的 {@code code} 里——这是国内后端最常见的约定，
  * 前端只解析 body 就行。真正的 4xx/5xx 留给网关和基础设施层。
  */
 @Slf4j

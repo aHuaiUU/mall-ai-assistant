@@ -6,11 +6,11 @@ import lombok.Data;
 /**
  * 商品（镜像 hmall 的 {@code com.hmall.api.dto.ItemDTO}）。
  *
- * <p>为什么不直接依赖 hm-api 的 jar：hmall 是 Boot 2.7 + {@code javax.*}，
+ * 为什么不直接依赖 hm-api 的 jar：hmall 是 Boot 2.7 + {@code javax.*}，
  * ai-service 是 Boot 3.5 + {@code jakarta.*}，把 hm-api 引进来会和
  * spring-boot-starter-web 的注解体系冲突。这里只复制字段，代价是 hmall 改字段时要手动同步。
  *
- * <p><b>price 单位是「分」</b>，28900 表示 289.00 元。工具层返回给模型前必须换算成元，
+ * price 单位是「分」，28900 表示 289.00 元。工具层返回给模型前必须换算成元，
  * 否则模型会把「28900」当成人均消费报给用户。
  */
 @Data

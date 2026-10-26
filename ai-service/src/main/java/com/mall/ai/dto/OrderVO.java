@@ -8,9 +8,9 @@ import java.time.LocalDateTime;
 /**
  * 订单（镜像 hmall 的 {@code com.hmall.trade.domain.vo.OrderVO}）。
  *
- * <p><b>totalFee 单位也是「分」。</b>
+ * totalFee 单位也是「分」。
  *
- * <p>安全提醒：hmall 的 {@code GET /orders/{id}} 是内部接口，<b>不校验订单归属</b>
+ * 安全提醒：hmall 的 {@code GET /orders/{id}} 是内部接口，不校验订单归属
  * —— 谁拿到 orderId 都能查。所以 AI 层必须在工具里做两件事：
  * 一是只允许查当前登录用户自己的订单（拿 userId 过滤），
  * 二是订单号属于敏感数据，回答里不要原样回显完整 ID。

@@ -11,13 +11,13 @@ import java.time.LocalDateTime;
 /**
  * 知识库文档（表 {@code kb_document}）。
  *
- * <p>注意：
- * <ul>
- *   <li>{@code contentHash} 是唯一索引，重复上传同一份内容会撞 {@code uk_hash}，
- *       入库前必须先按它查一次，别指望数据库报错来兜底——那样拿不到可读的错误信息。</li>
- *   <li>{@code status}：0 待处理 / 1 已入库 / 2 处理失败，失败时写 {@code errorMsg}。</li>
- *   <li>{@code chunkCount} 是冗余计数，入库成功后回写，用来和 {@code kb_chunk} 对数。</li>
- * </ul>
+ * 注意：
+ *
+ *   - {@code contentHash} 是唯一索引，重复上传同一份内容会撞 {@code uk_hash}，
+ *       入库前必须先按它查一次，别指望数据库报错来兜底——那样拿不到可读的错误信息。
+ *   - {@code status}：0 待处理 / 1 已入库 / 2 处理失败，失败时写 {@code errorMsg}。
+ *   - {@code chunkCount} 是冗余计数，入库成功后回写，用来和 {@code kb_chunk} 对数。
+ *
  */
 @Data
 @TableName("kb_document")

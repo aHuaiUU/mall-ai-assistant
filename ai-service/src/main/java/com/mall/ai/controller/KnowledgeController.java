@@ -20,7 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
 /**
  * 知识库管理接口，对应 docs/architecture.md 4.2。
  *
- * <p>{@code rebuild}（按 docId 重建索引）暂不提供：重建 = purge + 用新切分参数重新入库，
+ * {@code rebuild}（按 docId 重建索引）暂不提供：重建 = purge + 用新切分参数重新入库，
  * 而重新入库需要原始文件。等第 8 步调切分参数时再补，届时把原始文件也存一份。
  */
 @Slf4j

@@ -34,12 +34,12 @@ import java.util.UUID;
 /**
  * 知识入库编排：解析 → 归一化 → 幂等检查 → 加锁 → 切分 → 落 MySQL → 写向量 → 回写状态。
  *
- * <p><b>为什么写操作不加 {@code @Transactional}</b>：这段流程里包含外部调用（embedding 接口、
+ * 为什么写操作不加 {@code @Transactional}：这段流程里包含外部调用（embedding 接口、
  * Redis 向量写入），一次调用可能几秒到几十秒。包在一个数据库事务里，事务会被长时间持有，
  * 连接池很快被打满，而且外部调用失败时数据库事务回滚并不会撤销已经写进向量库的数据——
  * 事务在这里给不了你想要的一致性。所以改用「显式补偿」：记录已写入的 id，失败时按顺序清理。
  *
- * <p><b>写入顺序：先 MySQL 后向量</b>，理由见 {@link #persistChunks}。
+ * 写入顺序：先 MySQL 后向量，理由见 {@link #persistChunks}。
  */
 @Slf4j
 @Service
@@ -56,9 +56,10 @@ public class IngestService {
     private final VectorStore vectorStore;
     private final StringRedisTemplate redisTemplate;
 
+    //切分大小
     @Value("${ai.ingest.chunk-size:500}")
     private int chunkSize;
-
+    //重叠字节
     @Value("${ai.ingest.overlap:80}")
     private int overlap;
 
@@ -69,21 +70,25 @@ public class IngestService {
     private long lockTtlSeconds;
 
     /**
-     * 上传并入库。
+     * 上传并入库
      *
      * @param title      表单传入优先；为空则取文件名（去扩展名）
      * @param sourceType 表单传入优先；为空则按文件名推断
      */
     public UploadVO ingest(MultipartFile file, String title, String sourceType) {
         long start = System.currentTimeMillis();
+        //获取文件名
         String filename = file.getOriginalFilename() == null ? "unknown" : file.getOriginalFilename();
+        //标题为空则以文件明标题，反之标题命名并清洗开头结尾空白
         String finalTitle = (title == null || title.isBlank()) ? stripExtension(filename) : title.strip();
+        //判断文件类型 政策 问答 手册
         String finalType = (sourceType == null || sourceType.isBlank()) ? inferSourceType(filename) : sourceType.strip();
 
-        // 1) 解析 + 归一化
+        // 1) read解析 + 归一化
         String rawText = readerFactory.read(file.getResource(), filename).stream()
                 .map(Document::getText)
                 .reduce("", (a, b) -> a + "\n" + b);
+        // 1.1 得到清洗后内容
         String normalized = textNormalizer.normalize(rawText);
         if (normalized.isBlank()) {
             // 扫描件 PDF 会走到这里：Tika 抽不出文字。必须显式失败，
@@ -93,15 +98,19 @@ public class IngestService {
 
         // 2) 幂等：正文 hash 唯一
         String contentHash = sha256(normalized);
+        // 2.1查询是否已存在
         KbDocument existing = documentMapper.selectOne(
                 new LambdaQueryWrapper<KbDocument>().eq(KbDocument::getContentHash, contentHash));
         if (existing != null) {
+            //2.2 不存在直接构建VO返回
             log.info("幂等命中：docId={} hash={} status={}", existing.getId(), contentHash, existing.getStatus());
             return buildResult(existing.getId(), existing.getChunkCount(), existing.getStatus(), true, start);
         }
 
         // 3) 分布式锁：防同一份文档并发入库
+        //  同一份文件只入库一次（幂等）
         String lockKey = LOCK_KEY_PREFIX + contentHash;
+        // 抢锁，防两个人同时传同一份
         Boolean locked = redisTemplate.opsForValue()
                 .setIfAbsent(lockKey, UUID.randomUUID().toString(), Duration.ofSeconds(lockTtlSeconds));
         if (!Boolean.TRUE.equals(locked)) {
@@ -117,9 +126,11 @@ public class IngestService {
             document.setStatus(0);
             documentMapper.insert(document);
 
-            // 4) 切分。切分器是你自己写的；它只需要处理已归一化的文本
+            // 4) 切分
+            // 是否有二级标题
             boolean hasHeadings = normalized.lines().anyMatch(l -> l.startsWith("## "));
             SplitContext ctx = new SplitContext(finalType, finalTitle, chunkSize, overlap, hasHeadings);
+            // 传入切分条件与内容
             List<String> pieces = textSplitter.split(normalized, ctx);
             if (pieces.isEmpty()) {
                 throw new BizException(50001, "切分结果为空：" + filename);
@@ -158,8 +169,8 @@ public class IngestService {
     /**
      * 先写 MySQL 分片行（含 vector_id），返回 id 列表。
      *
-     * <p><b>顺序为什么是这个</b>：两种顺序都会留残留，但危险程度不同。
-     * 先写向量再写 MySQL，MySQL 失败会留下<b>孤儿向量</b>——它会出现在检索结果里，
+     * 顺序为什么是这个：两种顺序都会留残留，但危险程度不同。
+     * 先写向量再写 MySQL，MySQL 失败会留下孤儿向量——它会出现在检索结果里，
      * 却反查不到原文和 docId，表现为「回答没有出处」或者空指针，而且不去对账根本发现不了。
      * 反过来先写 MySQL，向量失败只留下「有行没向量」，检索上等价于没入库，
      * 无害，且 status=2 明确标记，重试即可。
@@ -209,7 +220,7 @@ public class IngestService {
     }
 
     /**
-     * 失败补偿。<b>先删向量，再删 MySQL 行</b>，顺序不能反：
+     * 失败补偿。先删向量，再删 MySQL 行，顺序不能反：
      * 反了会在「删完行、删向量失败」时留下孤儿向量——最危险的残留。
      */
     private void compensate(Long docId, Exception cause) {
@@ -242,7 +253,7 @@ public class IngestService {
     /**
      * 删除文档：按 docId 查 vector_id → 删向量 → 删 MySQL 行 → 逻辑删除文档。
      *
-     * <p>索引里没有声明 metadata 字段，所以<b>不能用 filterExpression 按 docId 过滤删除</b>，
+     * 索引里没有声明 metadata 字段，所以不能用 filterExpression 按 docId 过滤删除，
      * 只能这样「先查 id 再按 id 删」。
      */
     public void purge(Long docId) {
@@ -260,7 +271,9 @@ public class IngestService {
         return text == null ? 0 : text.length();
     }
 
+    //通过
     private String inferSourceType(String filename) {
+        //大写字符转小写
         String lower = filename.toLowerCase(Locale.ROOT);
         if (lower.contains("政策") || lower.contains("policy") || lower.contains("售后")) {
             return "POLICY";
@@ -274,6 +287,7 @@ public class IngestService {
         return "CATEGORY";
     }
 
+    //去除扩展名获取文件名
     private String stripExtension(String filename) {
         int dot = filename.lastIndexOf('.');
         return dot > 0 ? filename.substring(0, dot) : filename;
@@ -286,6 +300,7 @@ public class IngestService {
         return s.length() <= max ? s : s.substring(0, max);
     }
 
+    // 构建UploadVO内容
     private UploadVO buildResult(Long docId, Integer chunkCount, Integer status, boolean existed, long start) {
         UploadVO vo = new UploadVO();
         vo.setDocId(docId);

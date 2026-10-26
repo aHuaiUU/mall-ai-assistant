@@ -5,14 +5,14 @@ import lombok.Data;
 /**
  * ai-service 自己的统一响应体（非 SSE 接口用）。
  *
- * <p>code 约定：0 成功；4xx 客户端错误；50001 文档解析失败；50002 向量化失败；50003 模型不可用。
+ * code 约定：0 成功；4xx 客户端错误；50001 文档解析失败；50002 向量化失败；50003 模型不可用。
  *
- * <p><b>不要用它来反序列化 hmall 的响应</b>，两者不一致（已核对 hmall 源码）：
- * <ul>
- *   <li>hmall 的类是 {@code com.hmall.common.domain.R}，成功码是 <b>200</b>，不是 0；</li>
- *   <li>更关键：item-service 和 trade-service 的 Controller <b>根本不返回 R 包装</b>，
- *       直接返回 {@code ItemDTO} / {@code PageDTO<ItemDTO>} / {@code OrderVO}。</li>
- * </ul>
+ * 不要用它来反序列化 hmall 的响应，两者不一致（已核对 hmall 源码）：
+ *
+ *   - hmall 的类是 {@code com.hmall.common.domain.R}，成功码是 200，不是 0；
+ *   - 更关键：item-service 和 trade-service 的 Controller 根本不返回 R 包装，
+ *       直接返回 {@code ItemDTO} / {@code PageDTO<ItemDTO>} / {@code OrderVO}。
+ *
  * 所以 Feign 客户端的返回类型直接用 {@code com.mall.ai.dto} 下的镜像类，
  * 套一层 {@code Result} 会解析出 null 且不报错——这是最难查的一类 bug。
  */
