@@ -1,11 +1,15 @@
 package com.mall.ai.controller;
 
 import com.mall.ai.client.ItemClient;
+import com.mall.ai.dto.AskResultVO;
 import com.mall.ai.dto.ItemDTO;
+import com.mall.ai.dto.KbHitVO;
 import com.mall.ai.dto.PageDTO;
 import com.mall.ai.mapper.KbChunkMapper;
 import com.mall.ai.mapper.KbDocumentMapper;
 import com.mall.ai.reader.DocumentReaderFactory;
+import com.mall.ai.service.ChatService;
+import com.mall.ai.service.RagService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
@@ -40,6 +44,84 @@ public class DevProbeController {
     private final KbDocumentMapper kbDocumentMapper;
     private final KbChunkMapper kbChunkMapper;
     private final DocumentReaderFactory documentReaderFactory;
+    private final RagService ragService;
+    private final ChatService chatService;
+
+    /**
+     * 检查点 1：检索。不调模型、不花钱，几秒钟能跑一次。
+     *
+     * 先用它确认「问题能检到正确的段落」，再去接模型——否则模型答得不好时，
+     * 分不清是检索喂错了还是提示词的问题。
+     */
+    @GetMapping("/kb")
+    public Map<String, Object> kb(@RequestParam("q") String question,
+                                  @RequestParam(value = "k", defaultValue = "5") int k,
+                                  @RequestParam(value = "threshold", defaultValue = "0.4") double threshold) {
+        long start = System.currentTimeMillis();
+        List<KbHitVO> hits = ragService.retrieve(question, k, threshold);
+
+        List<Map<String, Object>> items = hits.stream().map(h -> {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("docId", h.getDocId());
+            item.put("title", h.getTitle());
+            item.put("chunkIndex", h.getChunkIndex());
+            item.put("chars", h.getContent() == null ? 0 : h.getContent().length());
+            item.put("snippet", h.getSnippet());
+            return item;
+        }).toList();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("question", question);
+        result.put("k", k);
+        result.put("threshold", threshold);
+        result.put("hitCount", hits.size());
+        result.put("costMs", System.currentTimeMillis() - start);
+        result.put("hits", items);
+        return result;
+    }
+
+    /**
+     * 检查点 1b：阈值扫描。看同一问题在不同阈值下命中的条数。
+     *
+     * 阈值不能拍脑袋：这条曲线是第 8 步评测集的雏形——找「召回开始掉、但仍能命中目标段落」的那一档。
+     */
+    @GetMapping("/kb/sweep")
+    public Map<String, Object> kbSweep(@RequestParam("q") String question,
+                                       @RequestParam(value = "k", defaultValue = "10") int k) {
+        double[] thresholds = {0.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8};
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("question", question);
+        result.put("k", k);
+        result.put("hitCountByThreshold", ragService.sweep(question, thresholds, k));
+        return result;
+    }
+
+    /**
+     * 检查点 2：上下文拼装。返回「即将发给模型的用户消息」，不调模型。
+     *
+     * 打印出来人工看一眼：片段有没有截断、花括号有没有异常、空检索时是不是只剩占位符。
+     */
+    @GetMapping("/context")
+    public Map<String, Object> context(@RequestParam("q") String question) {
+        List<KbHitVO> hits = ragService.retrieve(question);
+        String message = chatService.buildUserMessage(question, hits);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("hitCount", hits.size());
+        result.put("chars", message.length());
+        result.put("userMessage", message);
+        return result;
+    }
+
+    /**
+     * 检查点 3/4/5：单轮问答。
+     *
+     * skipRetrieval=true 只验证模型连通；false 走完整 RAG。
+     */
+    @GetMapping("/ask")
+    public AskResultVO ask(@RequestParam("q") String question,
+                           @RequestParam(value = "skipRetrieval", defaultValue = "false") boolean skipRetrieval) {
+        return chatService.ask(question, skipRetrieval);
+    }
 
     /**
      * 检查点 1：解析。上传一个文件，看抽出来的文本长什么样。

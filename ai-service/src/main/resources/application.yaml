@@ -33,7 +33,7 @@ spring:
       client:
         config:
           default:
-            # 调 hmall 的超时：连接 1s、读取 3s，超时即视为工具失败（见 docs-architecture 4.3）
+            # 调 mall 的超时：连接 1s、读取 3s，超时即视为工具失败（见 docs-architecture 4.3）
             connect-timeout: 1000
             read-timeout: 3000
             # basic 会打印「方法 URL 状态码 耗时」，联调第 1 步时最有用
@@ -47,12 +47,15 @@ spring:
       api-key: ${OPENAI_API_KEY}
       embedding:
         options:
-          # 实测维度 1024（text-embedding-3-small 是 1536，别想当然）
+          # 实测维度 1024
           model: ${EMBEDDING_MODEL:qwen3.7-text-embedding}
       chat:
         options:
-          # 第 3 步接对话模型时改这里
-          temperature: 0.3
+          # 实测过 function calling：qwen3.8-flash 返回的 arguments 不是合法 JSON，
+          # qwen3.7-plus / qwen3.7-max / deepseek-v4.1-flash 正常
+          model: ${CHAT_MODEL:qwen3.7-plus}
+          # 事实型问答温度要低，高了开始编
+          temperature: 0.2
 
     vectorstore:
       redis:
@@ -105,6 +108,15 @@ ai:
     embed-batch-size: 20
     # 同一份文档的入库锁；正常入库远小于 60s，给足余量防长时间 embedding 超时
     lock-ttl-seconds: 60
+
+  # ===== 检索参数 =====
+  # 阈值必须靠评测集定，不能拍。找答案的做法是先用 /dev/probe/kb/sweep 看不同阈值下的命中数，
+  # 再挑「召回开始掉、但仍能命中目标段落」的那一档。
+  rag:
+    top-k: 5
+    similarity-threshold: 0.4
+    # 拼进提示词的片段数上限（防止 topK 调大后上下文爆掉）
+    max-context-chunks: 5
 
 logging:
   level:
