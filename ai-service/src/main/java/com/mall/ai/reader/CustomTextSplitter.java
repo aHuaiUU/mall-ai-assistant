@@ -61,10 +61,6 @@ public class CustomTextSplitter implements TextSplitter {
         }
         log.info("chunks.size() = " + chunks.size());
 
-
-        //④ 单个段就超过 chunkSize 的，硬切成几块
-        //⑤ 兜底：不让任何一块超过 chunkSize
-
         return chunks;
     }
 }

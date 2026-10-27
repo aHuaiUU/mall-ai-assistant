@@ -117,6 +117,12 @@ ai:
     similarity-threshold: 0.4
     # 拼进提示词的片段数上限（防止 topK 调大后上下文爆掉）
     max-context-chunks: 5
+    # 过滤表格流水句等噪声片段；多取 fetch-multiplier 倍候选再截断
+    filter-fragments: true
+    fetch-multiplier: 2
+    # 噪声判定：短于该长度、或含 ≥ 阈值个「是/否」token（决策矩阵被抽散的特征）
+    min-chunk-chars: 50
+    yes-no-token-threshold: 3
 
 logging:
   level:
