@@ -1,5 +1,5 @@
 server:
-  port: 9090
+  port: 9092
 
 spring:
   application:
@@ -15,7 +15,7 @@ spring:
   # 把 .env 当成 properties 载入（KEY=VALUE 格式兼容）。
   # optional: 前缀保证 .env 不存在时也能启动，不报 FileNotFound。
   config:
-    import: optional:file:.env[.properties]
+    import: optional:file:./ai-service/.env[.properties]
 
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -127,3 +127,11 @@ ai:
 logging:
   level:
     com.mall.ai.client: DEBUG
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: alpha
+    tags-sorter: alpha
