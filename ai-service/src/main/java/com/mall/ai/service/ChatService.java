@@ -14,7 +14,7 @@ import java.util.List;
 /**
  * 单轮问答编排：检索 → 拼上下文 → 调模型 → 标注来源。
  *
- * <p>不用 Spring AI 的 QuestionAnswerAdvisor：它把「检索 → 拼装 → 调用」整条链路藏起来，
+ * 不用 Spring AI 的 QuestionAnswerAdvisor：它把「检索 → 拼装 → 调用」整条链路藏起来，
  * 而本项目的两个硬约束恰好要在这两层控制——检索为空时不能把空上下文送进模型，
  * 回答必须能标注来源。自己拼装才能显式处理这两种情况。
  *
@@ -69,12 +69,7 @@ public class ChatService {
         return result;
     }
 
-    /**
-     * 拼出要发给模型的 user message。
-     *
-     * <p>检索为空时只放占位符，不拼空的 doc 标签——空上下文会让模型自由发挥，
-     * 这是原型项目踩过的坑。
-     */
+
     /** 拼出要发给模型的 user message。调试端点 /dev/probe/context 也复用它，避免两处逻辑漂移。 */
     public String buildUserMessage(String question, List<KbHitVO> hits) {
         StringBuilder sb = new StringBuilder();

@@ -12,7 +12,9 @@ import com.mall.ai.service.ChatService;
 import com.mall.ai.service.RagService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.document.Document;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -20,11 +22,15 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -46,6 +52,7 @@ public class DevProbeController {
     private final DocumentReaderFactory documentReaderFactory;
     private final RagService ragService;
     private final ChatService chatService;
+    private final ChatClient chatClient;
 
     /**
      * 检查点 1：检索。不调模型、不花钱，几秒钟能跑一次。
@@ -209,5 +216,47 @@ public class DevProbeController {
             result.put("status", item.getStatus());
         }
         return result;
+    }
+
+    /**
+     * 检查点 1：最小流式探针。
+     *
+     * <p>刻意什么都不加：不检索、不心跳、不发 done。
+     * 这样如果它也不通，问题一定在「Spring MVC 能不能把 SseEmitter 的帧推出去」，
+     * 而不是检索慢、心跳写坏了帧、协议拼错了。
+     */
+    @GetMapping(value = "/stream-raw", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamRaw(@RequestParam("q") String q) {
+        SseEmitter emitter = new SseEmitter(120_000L);
+        AtomicLong seq = new AtomicLong();
+
+        Disposable disposable = chatClient.prompt().user(q).stream().content().subscribe(
+                chunk -> {
+                    try {
+                        emitter.send(SseEmitter.event()
+                                .id(String.valueOf(seq.incrementAndGet()))
+                                .name("delta")
+                                .data(Map.of("content", chunk), MediaType.APPLICATION_JSON));
+                    } catch (IOException e) {
+                        // 抛出去会让 Reactor 走 onError → 下面的 err 分支
+                        throw new RuntimeException(e);
+                    }
+                },
+                err -> {
+                    try {
+                        emitter.send(SseEmitter.event().name("error")
+                                .data(Map.of("message", String.valueOf(err.getMessage())),
+                                        MediaType.APPLICATION_JSON));
+                    } catch (IOException ignored) {
+                        // 客户端已断开
+                    }
+                    emitter.complete();
+                },
+                emitter::complete);
+
+        emitter.onCompletion(disposable::dispose);
+        emitter.onTimeout(disposable::dispose);
+        emitter.onError(e -> disposable.dispose());
+        return emitter;
     }
 }

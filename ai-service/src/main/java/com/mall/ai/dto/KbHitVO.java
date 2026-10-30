@@ -13,16 +13,16 @@ import lombok.Data;
  */
 @Data
 public class KbHitVO {
-
+    // 向量库向量ID
     private String vectorId;
-
+    // 向量库文档ID
     private Long docId;
 
     /** 文档标题，用于回答里标注来源 */
     private String title;
-
+    // 来源类型
     private String sourceType;
-
+    // 切片索引 ，用于回答里标注来源
     private Integer chunkIndex;
 
     /** 切片原文 */

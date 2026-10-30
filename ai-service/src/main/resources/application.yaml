@@ -79,6 +79,12 @@ spring:
       password: ${REDIS_PASSWORD}
       timeout: 3s
 
+  mvc:
+    async:
+      # 必须 >= ai.stream.timeout-ms。默认只有 30s，
+      # 长回答会在 30s 处被容器直接掐断，而且前端收不到任何 error 帧，只有连接突然关闭
+      request-timeout: 180s
+
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
@@ -108,6 +114,11 @@ ai:
     embed-batch-size: 20
     # 同一份文档的入库锁；正常入库远小于 60s，给足余量防长时间 embedding 超时
     lock-ttl-seconds: 60
+  stream:
+    # SseEmitter 自身的超时；与上面取较小值生效
+    timeout-ms: 180000
+    # 心跳间隔。0 表示关闭心跳（仅本地直连调试时可以关）
+    heartbeat-seconds: 15
 
   # ===== 检索参数 =====
   # 阈值必须靠评测集定，不能拍。找答案的做法是先用 /dev/probe/kb/sweep 看不同阈值下的命中数，

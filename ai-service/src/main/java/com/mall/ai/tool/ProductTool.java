@@ -6,6 +6,7 @@ import com.mall.ai.dto.PageDTO;
 import com.mall.ai.service.ToolCallLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -45,7 +46,11 @@ public class ProductTool {
                     "用户提到预算、多少钱以内、不超过多少、2000以内 时必须传这个参数，" +
                     "不要省略；用户没有提到预算不传这个参数",
                     required = false)
-            Integer maxPriceYuan) {
+            Integer maxPriceYuan,
+            ToolContext toolContext) {
+
+        Object sid = toolContext.getContext().get("sessionId");
+
 
 
         long start = System.currentTimeMillis();
@@ -94,7 +99,7 @@ public class ProductTool {
             String text = render(page.getTotal(), items);
             // 记录模型成功查询日志
             toolCallLogService.record("searchProduct", argsJson, text,
-                    null, cost);
+                    null, cost,sid == null ? null : sid.toString());
             return text;
         } catch (Exception e) {
             // 任何异常都转成人话返回
@@ -103,6 +108,7 @@ public class ProductTool {
             toolCallLogService.record("searchProduct", argsJson, null, e.getMessage(), cost);
             return "商品服务暂时不可用，请稍后重试。";
         }
+
     }
 
     // 构建查询到的商品信息,返回给模型处理
