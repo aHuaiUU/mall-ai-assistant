@@ -1,7 +1,9 @@
 # 凭据：绝不进仓库。KEY 进过 Git 历史就只能轮换，删掉文件没用
+# .env 不带路径 = 匹配任意层级；写死 ai-service/.env 会漏掉将来其它模块下的同名文件
 .env
 .env.*
 !.env.example
+
 # 面试准备笔记：只在本地保留，不进公开仓库
 docs/pitfalls-and-interview.md
 
