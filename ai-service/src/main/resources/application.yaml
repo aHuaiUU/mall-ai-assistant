@@ -119,6 +119,16 @@ ai:
     timeout-ms: 180000
     # 心跳间隔。0 表示关闭心跳（仅本地直连调试时可以关）
     heartbeat-seconds: 15
+  memory:
+    # 记忆保留 24 小时；每轮写入都会刷新 TTL（活跃会话不会掉）
+    ttl-hours: 24
+    # 窗口 5 轮 = 10 条消息。注意这是「条数上限」，不是 token 上限，
+    # 单条内容另由 max-chars-per-message 截断
+    window-turns: 5
+    max-chars-per-message: 240
+  cache:
+    ttl-minutes: 60
+
 
   # ===== 检索参数 =====
   # 阈值必须靠评测集定，不能拍。找答案的做法是先用 /dev/probe/kb/sweep 看不同阈值下的命中数，

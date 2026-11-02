@@ -2,9 +2,14 @@ package com.mall.ai.service;
 
 import com.mall.ai.dto.ChatRequestVO;
 import com.mall.ai.dto.KbHitVO;
+import com.mall.ai.dto.MemoryMessageVO;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.client.ChatClient;
@@ -29,6 +34,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * 流式问答编排。事件协议：delta / tool / done / error。
@@ -44,7 +50,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 而 {@code toStream().collect()} / {@code blockLast()} 会把流式变成「等全文生成完再一次性返回」，
  * 首字延迟从数百毫秒劣化到全文生成时间——这就是原型项目那个坑。
  *
- * <h3>为什么所有 send 都走同一把锁</h3>
+ * 为什么所有 send 都走同一把锁
  * {@link SseEmitter#send} 不是线程安全的。心跳线程和模型回调线程并发写会交错出坏帧
  * （SSE 帧边界被破坏，前端 JSON 解析失败，且是偶发、极难复现）。
  * 常见做法是把心跳并进 Flux 用 {@code Flux.merge} 保证单线程发送，但
@@ -59,6 +65,11 @@ public class ChatStreamService {
     private final ChatClient chatClient;
     private final RagService ragService;
     private final ChatService chatService;
+
+    // 会话记忆服务
+    private final ConversationMemoryService memoryService;
+    // 问答缓存服务
+    private final QaCacheService qaCacheService;
 
     @Value("${ai.stream.timeout-ms:180000}")
     private long timeoutMs;
@@ -86,11 +97,11 @@ public class ChatStreamService {
      */
     public SseEmitter stream(ChatRequestVO request) {
         String sessionId = request.getSessionId() == null || request.getSessionId().isBlank()
-                ? newSessionId()
-                : request.getSessionId();
-
+                ? newSessionId()        // 新会话，生成新会话 ID
+                : request.getSessionId(); // 旧会话，直接使用会话 ID
+        String question = request.getMessage();
         SseEmitter emitter = new SseEmitter(timeoutMs);
-        StreamSession session = new StreamSession(emitter, sessionId);
+        StreamSession session = new StreamSession(emitter, sessionId, question);
 
         // 三个回调都必须接：容器侧的完成、超时、错误，都要释放上游，
         // 否则用户已经关页面了，模型还在往下生成、token 还在计费
@@ -106,39 +117,115 @@ public class ChatStreamService {
         return emitter;
     }
 
+    /**
+     * // 准备流式回答，包括检索、拼装上下文、订阅模型流
+     * private void prepareAndStream_backup(StreamSession session, ChatRequestVO request) {
+     * List<KbHitVO> hits;
+     * String userMessage;
+     * // 检索知识库文档，构建提示词上下文
+     * try {
+     * hits = request.isSkipRetrieval() ? List.of() : ragService.retrieve(request.getMessage());
+     * // 复用同步链路的拼装逻辑：两条路径的上下文格式必须一致，
+     * // 否则「同步答得对、流式答错」这种问题会浪费一整天
+     * userMessage = chatService.buildUserMessage(request.getMessage(), hits);
+     * } catch (Exception e) {
+     * log.error("流式问答前置失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
+     * session.finishWithError("RETRIEVE_FAILED", "检索失败，请稍后重试");
+     * session.dispose();
+     * return;
+     * }
+     * <p>
+     * session.hits = hits;
+     * session.contextChars = userMessage.length();
+     * <p>
+     * try {
+     * // chatResponse() 而不是 content()：要多拿 usage（done 帧里的 tokens）。
+     * // content() 只有文本，永远拿不到 token 数。
+     * Flux<ChatResponse> flux = chatClient.prompt()
+     * .user(userMessage)
+     * .stream()
+     * .chatResponse();
+     * session.startStreaming(flux);
+     * } catch (Exception e) {
+     * log.error("流式订阅失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
+     * session.finishWithError("MODEL_UNAVAILABLE", "模型调用失败，请稍后重试");
+     * session.dispose();
+     * }
+     * }
+     **/
+
     private void prepareAndStream(StreamSession session, ChatRequestVO request) {
-        List<KbHitVO> hits;
-        String userMessage;
+        String question = request.getMessage();
+
+        // 加载会话记忆，从 Redis 读取 JSON 字符串
+        List<MemoryMessageVO> history = memoryService.load(session.sessionId);
+
+        // 追问：从会话记忆中提取用户最近一次的问题
+        String lastQuestion = memoryService.lastUserQuestion(history);
+        // 检索查询：追问时，将用户最近一次的问题与当前问题拼接否则，直接使用当前问题
+        String retrievalQuery = (lastQuestion == null || lastQuestion.isBlank())
+                ? question
+                : lastQuestion + " " + question;
+        session.retrievalQuery = retrievalQuery;
+        // 当需要RAG检索且会话历史为空时，为true =(!不检索 && 会话历史为空)
+        boolean cacheAllowed = !request.isSkipRetrieval() && history.isEmpty();
+        if (session.cacheable) {
+            // 缓存命中：直接发送缓存内容，不进行检索
+            QaCacheService.CachedAnswer cached = qaCacheService.get(question);
+            if (cached != null) {
+                log.info("问答缓存命中 session：{} hit：{} length：{}", session.sessionId, cached.answer(), cached.answer().length());
+                // 回放缓存内容：直接发送缓存内容，不进行检索
+                session.replayCached(cached);
+                return;
+            }
+        }
+
+        List<KbHitVO> hits; // 检索到的知识库文档
+        String userMessage; // 提示词上下文
         try {
-            hits = request.isSkipRetrieval() ? List.of() : ragService.retrieve(request.getMessage());
-            // 复用同步链路的拼装逻辑：两条路径的上下文格式必须一致，
-            // 否则「同步答得对、流式答错」这种问题会浪费一整天
-            userMessage = chatService.buildUserMessage(request.getMessage(), hits);
+            hits = request.isSkipRetrieval()
+                    ? List.of()
+                    : ragService.retrieve(retrievalQuery);
+            userMessage = chatService.buildUserMessage(question, hits);
         } catch (Exception e) {
-            log.error("流式问答前置失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
+            log.error("流式问答前置失败 session：{} 原因：{}}", session.sessionId, e.getMessage(), e);
             session.finishWithError("RETRIEVE_FAILED", "检索失败，请稍后重试");
             session.dispose();
             return;
         }
-
         session.hits = hits;
         session.contextChars = userMessage.length();
 
-        Long firstDeadline = null;
+        // 只有「命中政策/FAQ」才允许缓存：商品类目命中里可能带价格库存，缓存 1 小时就是答错价
+        boolean policyOnly = !hits.isEmpty() && hits.stream()
+                .allMatch(h -> isStaticDoc(h.getSourceType()));
+        session.cacheable = cacheAllowed && policyOnly;
+
         try {
-            // chatResponse() 而不是 content()：要多拿 usage（done 帧里的 tokens）。
-            // content() 只有文本，永远拿不到 token 数。
+            List<Message> historyMessages = history.stream()
+                    .map(m -> "user".equals(m.role())
+                            ? (Message) new UserMessage(m.content())
+                            : (Message) new AssistantMessage(m.content()))
+                    .toList();
+
             Flux<ChatResponse> flux = chatClient.prompt()
+                    .toolContext(Map.of("sessionId", session.sessionId))
+                    .messages(historyMessages)
                     .user(userMessage)
                     .stream()
                     .chatResponse();
             session.startStreaming(flux);
         } catch (Exception e) {
-            log.error("流式订阅失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
+            log.error("流式订阅失败 session：{} 原因：{}", session.sessionId, e.getMessage(), e);
             session.finishWithError("MODEL_UNAVAILABLE", "模型调用失败，请稍后重试");
             session.dispose();
         }
     }
+
+    private Boolean isStaticDoc(String sourceType) {
+        return "POLICY".equals(sourceType) || "FAQ".equals(sourceType);
+    }
+
 
     private String newSessionId() {
         // 去掉短横线，前端放到 URL / 日志里都干净
@@ -159,31 +246,46 @@ public class ChatStreamService {
         private final SseEmitter emitter;
         private final String sessionId;
         private final String answerId = "a" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        private final String originalQuestion;
 
-        /** 终止守卫：done 与 error 互斥，且各只能发一次 */
+        /**
+         * 终止守卫：done 与 error 互斥，且各只能发一次
+         */
         private final AtomicBoolean terminated = new AtomicBoolean(false);
 
-        /** send 的互斥锁：保证心跳与 delta 不会交错写坏帧 */
+        /**
+         * send 的互斥锁：保证心跳与 delta 不会交错写坏帧
+         */
         private final Object sendLock = new Object();
 
-        private final AtomicLong seq = new AtomicLong();
+        private final AtomicLong seq = new AtomicLong();// 序列号，用于 delta 帧
         private final AtomicInteger deltaCount = new AtomicInteger();
         private final AtomicReference<Disposable> disposable = new AtomicReference<>();
         private final AtomicReference<ScheduledFuture<?>> heartbeat = new AtomicReference<>();
 
         private final long startNanos = System.nanoTime();
-        /** 首字延迟（毫秒）；-1 表示还没收到第一个非空增量 */
+        /**
+         * 首字延迟（毫秒）；-1 表示还没收到第一个非空增量
+         */
         private volatile long firstTokenMs = -1;
 
-        private volatile List<KbHitVO> hits = List.of();
-        private volatile int contextChars;
-        private volatile int answerChars;
+        private volatile List<KbHitVO> hits = List.of(); //检索到的知识库文档
+        private volatile int contextChars;  // 上下文字符数，用于写记忆和写缓存。
+        private volatile boolean cacheable;
+        private volatile String retrievalQuery; // 检索查询
+        private volatile int answerChars;  // 累积最终回答，用于写记忆和写缓存。
         private volatile Integer promptTokens;
         private volatile Integer completionTokens;
 
-        private StreamSession(SseEmitter emitter, String sessionId) {
+        /**
+         * 累积最终回答，用于写记忆和写缓存。不用它做展示——展示走 delta 帧
+         */
+        private final StringBuilder answer = new StringBuilder();
+
+        private StreamSession(SseEmitter emitter, String sessionId,String originalQuestion) {
             this.emitter = emitter;
             this.sessionId = sessionId;
+            this.originalQuestion = originalQuestion;
         }
 
         void startStreaming(Flux<ChatResponse> flux) {
@@ -214,12 +316,16 @@ public class ChatStreamService {
                 log.info("流式首字 session={} firstTokenMs={} deltaCount={}",
                         sessionId, firstTokenMs, deltaCount.get());
             }
-            answerChars += text.length();
-            deltaCount.incrementAndGet();
+
+            answerChars += text.length(); // 累加回答字符数
+            answer.append(text); // 记录回答文本
+            deltaCount.incrementAndGet(); // 增加 delta 帧 个数
             send("delta", Map.of("content", text));
         }
 
-        /** 流式下 usage 通常只在最后一个 chunk 出现；也可能完全不出现（取决于服务端） */
+        /**
+         * 流式下 usage 通常只在最后一个 chunk 出现；也可能完全不出现（取决于服务端）
+         */
         private void captureUsage(ChatResponse response) {
             if (response.getMetadata() == null || response.getMetadata().getUsage() == null) {
                 return;
@@ -254,10 +360,10 @@ public class ChatStreamService {
         }
 
         /**
-         * 正常收尾：发 done 然后关连接。
+         * 正常收尾：先落记忆/缓存，再发 done，最后关连接。
          *
-         * <p>tokens 优先用模型返回的 usage；拿不到就按字符数估（中文 1 字≈1 token）。
-         * 必须显式告诉前端这个数是估的（tokenEstimated），否则统计口径会悄悄失真。
+         * 顺序不能反：done 一发出，前端就断开、onCompletion 会 dispose，
+         * 之后再做落库就处于「连接已结束但仍要写 Redis」的状态，异常时记忆会悄悄丢。
          */
         private void finishWithDone() {
             if (!terminated.compareAndSet(false, true)) {
@@ -265,6 +371,97 @@ public class ChatStreamService {
             }
             cancelHeartbeat();
 
+            String answerText = answer.toString();
+            persistTurn(answerText,true);
+
+            Map<String, Object> payload = buildPayload(false);
+            log.info("流式完成 session={} tokens={} 估={} firstTokenMs={} costMs={} hit={} delta={} 字数={} cached=false",
+                    sessionId, payload.get("tokens"), payload.get("tokenEstimated"),
+                    firstTokenMs, elapsedMs(),
+                    hits.size(), deltaCount.get(), answerChars);
+
+            writeEvent("done", payload);
+            complete();
+        }
+        /**
+         * 缓存命中时的收尾。多带 cached / hitCount / titles 三个字段，前端可以显示「来自缓存」。
+         */
+        private void finishWithCachedDone(QaCacheService.CachedAnswer cached) {
+            if(!terminated.compareAndSet(false, true)){
+                return;
+            }
+            cancelHeartbeat();
+            Map<String, Object> payload = buildPayload(true);
+            payload.put("hitCount", cached.hitCount());
+            payload.put("titles", cached.titles());
+            log.info("流式完成（缓存回放） session={} firstTokenMs={} costMs={} 字数={}",
+                    sessionId, firstTokenMs, elapsedMs(), answerChars);
+
+            writeEvent("done", payload);
+            complete();
+        }
+        /**
+         * 缓存命中时的回放：分块发 delta，保持前端打字机效果。
+         *
+         * <p>逐块走和 onChunk 一样的记账（firstTokenMs / answerChars / deltaCount），
+         * 这样 done 帧里的统计口径和真实流式完全一致，不会出现「缓存命中时 tokens=0」。
+         */
+        void replayCached(QaCacheService.CachedAnswer cached){
+            String text = cached.answer() == null ? "" : cached.answer();
+            int chunkSize = 12; // 约 6 ~ 12 个字符，和模型 delta 粒度相当
+
+            for(int from = 0; from < text.length(); from += chunkSize){
+                if(terminated.get()){
+                    return; // 客户端断开，不再往下发
+                }
+                // 取当前块
+                String piece = text.substring(from, Math.min(from + chunkSize, text.length()));
+                if(firstTokenMs < 0){
+                    // 第一个 delta，记录当前时间作为 firstTokenMs
+                    firstTokenMs = elapsedMs();
+                }
+
+                answer.append(piece);
+                answerChars += piece.length();
+                deltaCount.incrementAndGet();
+                send("delta",Map.of("content",piece));
+                try{
+                    Thread.sleep(20); // 20ms ≈ 每秒 600 字,接近真实流式手感
+                }catch(InterruptedException e){
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            persistTurn(text,false); // 缓存命中也要写记忆，否则「那第二款呢」接不上
+            finishWithCachedDone(cached);
+        }
+
+        /**
+         * 落记忆 + 可选落缓存。失败只记日志：模型已经答完，不能因为写缓存失败让用户看不到答案。
+         * @param writeCache 缓存回放时传 false——刚从缓存读出来又写回去，只会平白延长 TTL
+         */
+        private void persistTurn(String answerText, boolean writeCache) {
+            if(answerText == null || answerText.isBlank()) {
+                return;
+            }
+            try{
+                
+                memoryService.appendTurn(sessionId,originalQuestion,answerText);
+
+                if(writeCache && cacheable){
+                    qaCacheService.put(originalQuestion, new QaCacheService.CachedAnswer(
+                            answerText, hits.size(), titlesOf(hits), !hits.isEmpty()));
+                    log.info("已写入问答缓存 session：{} 字数：{}", sessionId, answerChars);
+                }
+            }catch (Exception e){
+                // 写 redis 失败，不影响这次回答交付
+                log.warn("记忆或缓存写入失败 session：{} 原因：{}", sessionId, e.getMessage(),e);
+            }
+        }
+
+        /** done 帧的公共 payload；cached 决定前端展示口径 */
+        private Map<String, Object> buildPayload(boolean cached) {
             boolean estimated = completionTokens == null || completionTokens <= 0;
             int tokens = estimated ? answerChars + (promptTokens == null ? 0 : promptTokens)
                     : (promptTokens == null ? 0 : promptTokens) + completionTokens;
@@ -283,16 +480,20 @@ public class ChatStreamService {
             payload.put("contextChars", contextChars);
             payload.put("answerChars", answerChars);
             payload.put("deltaCount", deltaCount.get());
-
-            log.info("流式完成 session={} tokens={} 估={} firstTokenMs={} costMs={} hit={} delta={} 字数={}",
-                    sessionId, tokens, estimated, firstTokenMs, elapsedMs(),
-                    hits.size(), deltaCount.get(), answerChars);
-
-            writeEvent("done", payload);
-            complete();
+            payload.put("cached", cached);
+            return payload;
         }
-
-        /** 异常收尾：发 error 事件后关连接。与 done 互斥。 */
+        // 从检索命中的文档列表里，提取出所有不重复、非空的标题
+        private List<String> titlesOf(List<KbHitVO> hits){
+            return hits.stream()
+                    .map(KbHitVO::getTitle)
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .collect(Collectors.toList());
+        }
+        /**
+         * 异常收尾：发 error 事件后关连接。与 done 互斥。
+         */
         void finishWithError(String code, String message) {
             if (!terminated.compareAndSet(false, true)) {
                 return;
@@ -338,7 +539,9 @@ public class ChatStreamService {
             }
         }
 
-        /** 用于终止帧：此时 terminated 已经是 true，不能再走 send() 的守卫 */
+        /**
+         * 用于终止帧：此时 terminated 已经是 true，不能再走 send() 的守卫
+         */
         private void writeEvent(String eventName, Object payload) {
             synchronized (sendLock) {
                 try {
@@ -401,7 +604,9 @@ public class ChatStreamService {
             }
         }
 
-        /** 释放上游：必须在 onCompletion / onTimeout / onError 里调用 */
+        /**
+         * 释放上游：必须在 onCompletion / onTimeout / onError 里调用
+         */
         void dispose() {
             cancelHeartbeat();
             Disposable d = disposable.getAndSet(null);
@@ -409,9 +614,13 @@ public class ChatStreamService {
                 d.dispose();
             }
         }
-
+        // 计算 firstTokenMs
         private long elapsedMs() {
             return (System.nanoTime() - startNanos) / 1_000_000;
+        }
+
+        String answerText() {
+            return answer.toString();
         }
     }
 }
