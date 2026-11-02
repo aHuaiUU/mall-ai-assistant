@@ -6,8 +6,10 @@ import com.mall.ai.dto.PageDTO;
 import com.mall.ai.service.ToolCallLogService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.chat.model.ToolContext;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -25,14 +27,14 @@ import static org.mockito.Mockito.mock;
 class ProductToolTest {
 
     private final ToolCallLogService logService = mock(ToolCallLogService.class);
-
+    private final String sessionId = "10896";
     @Test
     @DisplayName("有价格上限时，必须同时传 minPrice=0 和 maxPrice=元转分")
     void passesBothPriceBounds() {
         FakeItemClient fake = new FakeItemClient(pageOf(item(1L, "跑步鞋A", 28900, 15)));
         ProductTool tool = new ProductTool(fake, logService);
 
-        String text = tool.searchProduct("跑步鞋", 500);
+        String text = tool.searchProduct("跑步鞋", 500, new ToolContext(Map.of("sessionId", sessionId)));
 
         assertEquals(0, fake.capturedMinPrice, "有上限时必须补 minPrice=0");
         assertEquals(50_000, fake.capturedMaxPrice, "500 元应换算成 50000 分");
@@ -47,7 +49,7 @@ class ProductToolTest {
         FakeItemClient fake = new FakeItemClient(pageOf(item(2L, "拉杆箱", 129900, 3)));
         ProductTool tool = new ProductTool(fake, logService);
 
-        tool.searchProduct("拉杆箱", null);
+        tool.searchProduct("拉杆箱", null, new ToolContext(Map.of("sessionId", sessionId)));
 
         assertNull(fake.capturedMinPrice);
         assertNull(fake.capturedMaxPrice);
@@ -59,7 +61,7 @@ class ProductToolTest {
         FakeItemClient fake = new FakeItemClient(pageOf());
         ProductTool tool = new ProductTool(fake, logService);
 
-        String text = tool.searchProduct("不存在的东西", null);
+        String text = tool.searchProduct("不存在的东西", null,  new ToolContext(Map.of("sessionId", sessionId)));
 
         assertTrue(text.contains("没有找到"), "应返回「没有找到」的提示，实际：" + text);
     }
@@ -71,7 +73,7 @@ class ProductToolTest {
         fake.shouldThrow = true;
         ProductTool tool = new ProductTool(fake, logService);
 
-        String text = tool.searchProduct("跑步鞋", 500);
+        String text = tool.searchProduct("跑步鞋", 500, new ToolContext(Map.of("sessionId", sessionId)));
 
         assertTrue(text.contains("暂时不可用"), "应返回降级文案，实际：" + text);
     }
@@ -82,7 +84,7 @@ class ProductToolTest {
         FakeItemClient fake = new FakeItemClient(pageOf(item(3L, "x", 100, 1)));
         ProductTool tool = new ProductTool(fake, logService);
 
-        String text = tool.searchProduct("   ", null);
+        String text = tool.searchProduct("   ", null, new ToolContext(Map.of("sessionId", sessionId)));
 
         assertTrue(text.contains("关键词"));
         assertNull(fake.capturedKeyword, "空关键词不应该请求下游");

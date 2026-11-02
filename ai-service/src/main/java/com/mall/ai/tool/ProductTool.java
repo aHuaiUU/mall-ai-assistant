@@ -33,7 +33,13 @@ public class ProductTool {
     private final ItemClient itemClient;
     private final ToolCallLogService toolCallLogService;
 
-
+    /**
+     * 按关键词搜索在售商品
+     * @param keyword 商品关键词
+     * @param maxPriceYuan 价格上限，单位：元
+     * @param toolContext 工具上下文，包含会话 ID 等信息
+     * @return
+     */
     @Tool(name = "searchProduct", description = "按关键词搜索在售商品。" +
             "当用户想要找商品、问有没有某个品类商品、或询问商品价格/库存时调用本工具。" +
             "一次最多返回5款，不要为了拿全量商品反复调用")
@@ -49,9 +55,7 @@ public class ProductTool {
             Integer maxPriceYuan,
             ToolContext toolContext) {
 
-        Object sid = toolContext.getContext().get("sessionId");
-
-
+        Object sid = toolContext == null ? null : toolContext.getContext().get("sessionId");
 
         long start = System.currentTimeMillis();
         // 记录模型传入参数：出现问题时复现模型传入参数
