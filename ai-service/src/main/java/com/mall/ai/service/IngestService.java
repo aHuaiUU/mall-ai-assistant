@@ -55,6 +55,7 @@ public class IngestService {
     private final KbChunkMapper chunkMapper;
     private final VectorStore vectorStore;
     private final StringRedisTemplate redisTemplate;
+    private final QaCacheService qaCacheService;
 
     //切分大小
     @Value("${ai.ingest.chunk-size:500}")
@@ -151,6 +152,9 @@ public class IngestService {
             done.setStatus(1);
             done.setChunkCount(pieces.size());
             documentMapper.updateById(done);
+
+            // 知识库变了，旧问答缓存必须整体失效
+            qaCacheService.bumpKbVersion();
 
             log.info("入库完成：docId={} 块数={} 耗时={}ms",
                     document.getId(), pieces.size(), System.currentTimeMillis() - start);
@@ -264,6 +268,8 @@ public class IngestService {
             chunkMapper.delete(new LambdaQueryWrapper<KbChunk>().eq(KbChunk::getDocId, docId));
         }
         documentMapper.deleteById(docId);
+        // 知识库变了，旧问答缓存必须整体失效
+        qaCacheService.bumpKbVersion();
     }
 
     /** 按字符估 token（中文 1 字≈1 token，偏保守）。只用于控制上下文长度，不需要精确。 */
