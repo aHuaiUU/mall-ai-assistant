@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mall-ai-assistant · 本地调试台</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #dfe3ea;
+    --muted: #8b93a1; --accent: #4f8cff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 18px;
+    border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  header .dot.ok { background: var(--ok); }
+  header .dot.bad { background: var(--err); }
+  header .spacer { flex: 1; }
+  header .hint { color: var(--muted); font-size: 12px; }
+  main {
+    display: grid; gap: 14px; padding: 14px;
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px; min-width: 0;
+  }
+  section h2 {
+    margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  textarea, input, select {
+    width: 100%; background: #0c0e12; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+    font: inherit; outline: none;
+  }
+  textarea:focus, input:focus, select:focus { border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 8px 14px; font: inherit; cursor: pointer;
+  }
+  button.ghost { background: transparent; border: 1px solid var(--line); color: var(--text); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  .row .grow { flex: 1; }
+  .muted { color: var(--muted); font-size: 12px; }
+  pre {
+    background: #0c0e12; border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px; margin: 8px 0 0; white-space: pre-wrap; word-break: break-word;
+    max-height: 260px; overflow: auto; font-size: 13px;
+  }
+  #answer { min-height: 130px; }
+  #answer .cursor { display: inline-block; width: 7px; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-top: 10px; }
+  .card { background: #0c0e12; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .card .k { color: var(--muted); font-size: 11px; }
+  .card .v { font-size: 15px; font-weight: 600; margin-top: 2px; }
+  .card .v.ok { color: var(--ok); }
+  .card .v.warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px;
+    background: #0c0e12; border: 1px 1px solid var(--line);
+  }
+  .tag.ok { color: var(--ok); border-color: #1f4025; }
+  .tag.err { color: var(--err); border-color: #4b1f1f; }
+  details { margin-top: 8px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .hit { border-left: 2px solid var(--line); padding-left: 8px; margin: 8px 0; }
+  .hit .meta { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="health"></span>
+  <h1>mall-ai-assistant · 本地调试台</h1>
+  <span class="hint" id="healthText">检查服务状态…</span>
+  <span class="spacer"></span>
+  <span class="hint">仅本机使用，不部署到公网</span>
+</header>
+
+<main>
+  <!-- ===================== 问答 ===================== -->
+  <section>
+    <h2>问答 · SSE 流式</h2>
+    <textarea id="question" placeholder="例如：500以内有什么跑步鞋 / 退货需要保留吊牌吗">500以内有什么跑步鞋</textarea>
+    <div class="row" style="margin-top:8px">
+      <button id="send">发送</button>
+      <button class="ghost" id="stop" disabled>中断</button>
+      <button class="ghost" id="newSession">新会话</button>
+      <label class="muted"><input type="checkbox" id="skipRetrieval" style="width:auto;vertical-align:middle"> 跳过检索</label>
+      <span class="spacer"></span>
+      <span class="muted">session：<code id="sessionId">（首轮为空）</code></span>
+    </div>
+
+    <pre id="answer" class="muted">回答会逐字出现在这里…</pre>
+
+    <div class="cards" id="doneCards"></div>
+
+    <details>
+      <summary>事件流（delta 之外的事件都会列在这里）</summary>
+      <pre id="events" class="muted">（暂无）</pre>
+    </details>
+  </section>
+
+  <!-- ===================== 知识库 ===================== -->
+  <section>
+    <h2>知识库</h2>
+    <div class="row">
+      <input type="file" id="file" class="grow">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="docTitle" placeholder="标题（留空取文件名）" class="grow">
+      <select id="sourceType" style="width:130px">
+        <option value="">自动推断</option>
+        <option value="POLICY">POLICY 政策</option>
+        <option value="FAQ">FAQ 问答</option>
+        <option value="CATEGORY">CATEGORY 商品</option>
+        <option value="MANUAL">MANUAL 手册</option>
+      </select>
+      <button id="upload">上传入库</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button class="ghost" id="dbCount">查库状态</button>
+      <span class="muted" id="dbInfo"></span>
+    </div>
+    <pre id="uploadResult" class="muted">（未上传）</pre>
+
+    <details open style="margin-top:12px">
+      <summary>检索探针（不走模型，直接看召回了什么）</summary>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="kbQ" placeholder="检索问题，例如：折旧费怎么算" class="grow">
+        <input type="number" id="kbK" value="5" style="width:70px" title="topK">
+        <input type="number" id="kbTh" value="0.4" step="0.05" style="width:80px" title="阈值">
+        <button id="kbSearch">检索</button>
+        <button class="ghost" id="kbSweep" title="同一问题在不同阈值下的命中数">阈值扫描</button>
+      </div>
+      <div id="kbHits"></div>
+    </details>
+  </section>
+
+  <!-- ===================== 指标 ===================== -->
+  <section>
+    <h2>指标</h2>
+    <div class="row">
+      <select id="metricHours" style="width:110px">
+        <option value="24">近 24 小时</option>
+        <option value="1">近 1 小时</option>
+        <option value="168">近 7 天</option>
+      </select>
+      <button id="loadMetrics">刷新</button>
+      <span class="spacer"></span>
+      <span class="muted">工具成功率来自 tool_call_log；TTFT 来自 Micrometer</span>
+    </div>
+    <div id="toolStats" style="margin-top:10px"></div>
+    <div class="cards" id="ttftCards"></div>
+  </section>
+
+  <!-- ===================== 直连探针 ===================== -->
+  <section>
+    <h2>直连探针 · hmall</h2>
+    <div class="row">
+      <input type="text" id="probeKey" placeholder="关键词，例如：跑步鞋" class="grow">
+      <input type="number" id="probeMax" placeholder="价格上限(元)" style="width:130px">
+      <button id="probeSearch">查商品</button>
+    </div>
+    <pre id="probeOut" class="muted">（直接调 hmall 的 /search/list，验证 Feign 与价格换算）</pre>
+  </section>
+</main>
+
+<script>
+/* ---------------------------------------------------------------------------
+ * 这个页面有两个用途：
+ *   1) 演示：提问 → 看逐字输出 → 看 done 里的 TTFT/命中数/是否缓存
+ *   2) 调试：上传文档、检索探针、指标查询、直连 hmall
+ *
+ * 关键实现点：SSE 用 fetch + ReadableStream 手写解析，不能用 EventSource
+ * —— EventSource 只支持 GET，而 /api/chat/stream 是 POST + JSON body。
+ * ------------------------------------------------------------------------- */
+
+const $ = (id) => document.getElementById(id);
+let currentSessionId = null;
+let abortController = null;
+
+/* ============================ 通用：fetch JSON ============================ */
+async function getJson(url, opts) {
+  const resp = await fetch(url, opts);
+  const text = await resp.text();
+  try { return JSON.parse(text); } catch { return { raw: text }; }
+}
+
+/* ============================ 健康检查 ============================ */
+async function checkHealth() {
+  try {
+    const h = await getJson('/actuator/health');
+    const ok = h && h.status === 'UP';
+    $('health').className = 'dot ' + (ok ? 'ok' : 'bad');
+    $('healthText').textContent = ok ? '服务正常' : ('状态：' + (h.status || '未知'));
+  } catch (e) {
+    $('health').className = 'dot bad';
+    $('healthText').textContent = '服务未启动';
+  }
+}
+
+/* ============================ 问答：SSE ============================ */
+function appendDelta(text) {
+  const box = $('answer');
+  if (box.classList.contains('muted')) { box.classList.remove('muted'); box.textContent = ''; }
+  box.textContent += text;
+  box.scrollTop = box.scrollHeight;
+}
+
+function logEvent(name, payload) {
+  const box = $('events');
+  if (box.classList.contains('muted')) { box.classList.remove('muted'); box.textContent = ''; }
+  box.textContent += `[${new Date().toLocaleTimeString()}] ${name} ${JSON.stringify(payload)}\n`;
+}
+
+function renderDone(p) {
+  const estimated = p.tokenEstimated ? '（估）' : '';
+  const cached = p.cached ? '缓存命中' : '模型生成';
+  const cards = [
+    ['首字延迟', (p.firstTokenMs >= 0 ? p.firstTokenMs + ' ms' : '-'), p.firstTokenMs < 2000 ? 'ok' : 'warn'],
+    ['总耗时', p.costMs + ' ms', ''],
+    ['tokens', p.tokens + estimated, ''],
+    ['来源', cached, p.cached ? 'ok' : ''],
+    ['命中片段', p.hitCount + (p.usedContext ? '' : '（未用上下文）'), p.usedContext ? 'ok' : 'warn'],
+    ['delta 数', p.deltaCount, ''],
+  ];
+  $('doneCards').innerHTML = cards.map(([k, v, cls]) =>
+    `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+
+  if (p.sessionId) { currentSessionId = p.sessionId; $('sessionId').textContent = p.sessionId; }
+}
+
+/** 手写 SSE 帧解析：按空行切帧，逐行取 event:/data: */
+async function streamChat(payload, handlers) {
+  abortController = new AbortController();
+  const resp = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal: abortController.signal,
+  });
+
+  const ct = resp.headers.get('Content-Type') || '';
+  // 参数校验失败时后端返回的是 JSON（响应头还没提交成事件流），必须分开处理
+  if (!ct.includes('text/event-stream')) {
+    const j = await resp.json().catch(() => ({ msg: '无法解析响应' }));
+    handlers.onJsonError(j);
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r/g, '');
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) >= 0) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      if (!frame.trim() || frame.startsWith(':')) continue;   // 心跳注释行
+      let event = 'message';
+      let data = '';
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) data += line.slice(5).trim();
+      }
+      if (data) handlers.onEvent(event, JSON.parse(data));
+    }
+  }
+}
+
+async function sendQuestion() {
+  const question = $('question').value.trim();
+  if (!question) return;
+  $('send').disabled = true; $('stop').disabled = false;
+  $('answer').textContent = ''; $('answer').classList.remove('muted');
+  $('events').textContent = '（暂无）'; $('events').classList.add('muted');
+  $('doneCards').innerHTML = '';
+
+  const t0 = performance.now();
+  try {
+    await streamChat({
+      sessionId: currentSessionId,
+      message: question,
+      skipRetrieval: $('skipRetrieval').checked,
+    }, {
+      onEvent(name, payload) {
+        if (name === 'delta') appendDelta(payload.content || '');
+        else if (name === 'done') { renderDone(payload); logEvent(name, payload); }
+        else if (name === 'error') { logEvent(name, payload); }
+        else { logEvent(name, payload); }
+      },
+      onJsonError(j) {
+        $('answer').textContent = '请求被拒绝：' + (j.msg || JSON.stringify(j));
+      },
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') appendDelta('\n\n[已中断]');
+    else $('answer').textContent = '连接失败：' + e.message;
+  } finally {
+    const cost = Math.round(performance.now() - t0);
+    logEvent('client', { wallClockMs: cost });
+    $('send').disabled = false; $('stop').disabled = true; abortController = null;
+  }
+}
+
+/* ============================ 知识库 ============================ */
+async function uploadDoc() {
+  const file = $('file').files[0];
+  if (!file) { $('uploadResult').textContent = '请先选择文件'; return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  if ($('docTitle').value.trim()) fd.append('title', $('docTitle').value.trim());
+  if ($('sourceType').value) fd.append('sourceType', $('sourceType').value);
+
+  $('uploadResult').textContent = '上传中…（大文件可能需要几十秒）';
+  $('upload').disabled = true;
+  try {
+    const j = await getJson('/api/knowledge/upload', { method: 'POST', body: fd });
+    $('uploadResult').textContent = JSON.stringify(j, null, 2);
+    refreshDbInfo();
+  } catch (e) {
+    $('uploadResult').textContent = '上传失败：' + e.message;
+  } finally {
+    $('upload').disabled = false;
+  }
+}
+
+async function refreshDbInfo() {
+  const j = await getJson('/dev/probe/db');
+  $('dbInfo').textContent = `文档 ${j.kbDocumentCount} 篇 / 切片 ${j.kbChunkCount} 块`;
+}
+
+async function kbSearch() {
+  const q = $('kbQ').value.trim();
+  if (!q) return;
+  const url = `/dev/probe/kb?q=${encodeURIComponent(q)}&k=${$('kbK').value}&threshold=${$('kbTh').value}`;
+  const j = await getJson(url);
+  const hits = j.hits || [];
+  $('kbHits').innerHTML = hits.length === 0
+    ? '<pre class="muted">没有命中（阈值可能过高，或知识库为空）</pre>'
+    : `<div class="muted">${j.hitCount} 条命中 · 耗时 ${j.costMs} ms</div>` + hits.map((h, i) => `
+        <div class="hit">
+          <div class="meta">#${i + 1} · ${h.title || '未命名'} · ${h.chars} 字 · docId=${h.docId ?? '-'} · chunk=${h.chunkIndex ?? '-'}</div>
+          <div>${escapeHtml((h.snippet || '').slice(0, 260))}</div>
+        </div>`).join('');
+}
+
+/** 阈值扫描：同一问题在 0.0~0.8 各档的命中数，第 8 步评测集的雏形 */
+async function kbSweep() {
+  const q = $('kbQ').value.trim();
+  if (!q) return;
+  const j = await getJson(`/dev/probe/kb/sweep?q=${encodeURIComponent(q)}&k=${$('kbK').value}`);
+  const map = j.hitCountByThreshold || {};
+  $('kbHits').innerHTML = `
+    <table>
+      <tr><th>阈值</th><th>命中数</th></tr>
+      ${Object.entries(map).map(([th, n]) => `<tr><td>${th}</td><td>${n}</td></tr>`).join('')}
+    </table>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/* ============================ 指标 ============================ */
+async function loadMetrics() {
+  const hours = $('metricHours').value;
+  const j = await getJson(`/api/metrics/tools?hours=${hours}`);
+  const tools = (j.data && j.data.tools) || [];
+  if (tools.length === 0) {
+    $('toolStats').innerHTML = '<pre class="muted">该时间窗内没有工具调用记录</pre>';
+  } else {
+    $('toolStats').innerHTML = `
+      <table>
+        <tr><th>工具</th><th>调用</th><th>成功</th><th>失败</th><th>成功率</th><th>平均</th><th>最大</th></tr>
+        ${tools.map(t => `<tr>
+          <td>${t.toolName}</td><td>${t.total}</td>
+          <td>${t.successCount}</td><td>${t.failCount}</td>
+          <td><span class="tag ${t.successRate >= 99 ? 'ok' : 'err'}">${t.successRate}%</span></td>
+          <td>${t.avgMs} ms</td><td>${t.maxMs} ms</td></tr>`).join('')}
+      </table>`;
+  }
+
+  // percentile 不在 /actuator/metrics 里，必须从 prometheus 文本里取 quantile
+  try {
+    const text = await (await fetch('/actuator/prometheus')).text();
+    const pick = (metric, q) => {
+      const m = text.match(new RegExp(`${metric}_seconds\\{[^}]*quantile="${q}"[^}]*\\}\\s+([0-9.]+)`));
+      return m ? Math.round(parseFloat(m[1]) * 1000) + ' ms' : '-';
+    };
+    const count = (text.match(/ai_qa_ttft_seconds_count\{[^}]*\}\s+([0-9.]+)/) || [])[1];
+    $('ttftCards').innerHTML = [
+      ['TTFT p50', pick('ai_qa_ttft', '0.5'), ''],
+      ['TTFT p95', pick('ai_qa_ttft', '0.95'), 'warn'],
+      ['耗时 p95', pick('ai_qa_cost', '0.95'), ''],
+      ['样本数', count || '0', ''],
+    ].map(([k, v, cls]) => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join('');
+  } catch (e) {
+    $('ttftCards').innerHTML = '<div class="muted">prometheus 端点不可用（检查 management.endpoints.web.exposure.include）</div>';
+  }
+}
+
+/* ============================ 直连探针 ============================ */
+async function probeSearch() {
+  const params = new URLSearchParams();
+  if ($('probeKey').value.trim()) params.set('key', $('probeKey').value.trim());
+  if ($('probeMax').value) params.set('maxPrice', $('probeMax').value);
+  const j = await getJson(`/dev/probe/search?${params.toString()}`);
+  $('probeOut').textContent = JSON.stringify(j, null, 2);
+}
+
+/* ============================ 绑定 ============================ */
+$('send').onclick = sendQuestion;
+$('stop').onclick = () => abortController && abortController.abort();
+$('newSession').onclick = () => {
+  currentSessionId = null; $('sessionId').textContent = '（首轮为空）';
+  $('doneCards').innerHTML = ''; $('answer').textContent = '回答会逐字出现在这里…';
+  $('answer').classList.add('muted');
+};
+$('question').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendQuestion();   // Ctrl+Enter 发送
+});
+$('upload').onclick = uploadDoc;
+$('dbCount').onclick = refreshDbInfo;
+$('kbSearch').onclick = kbSearch;
+$('kbSweep').onclick = kbSweep;
+$('loadMetrics').onclick = loadMetrics;
+$('metricHours').onchange = loadMetrics;
+$('probeSearch').onclick = probeSearch;
+
+checkHealth();
+refreshDbInfo();
+loadMetrics();
+setInterval(checkHealth, 15000);
+</script>
+</body>
+</html>
