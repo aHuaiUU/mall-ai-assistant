@@ -1,5 +1,5 @@
 server:
-  port: 9092
+  port: 9091
 
 spring:
   application:
@@ -144,7 +144,7 @@ ai:
     # 噪声判定：短于该长度、或含 ≥ 阈值个「是/否」token（决策矩阵被抽散的特征）
     min-chunk-chars: 50
     yes-no-token-threshold: 3
-
+# ===== 日志参数 =====
 logging:
   level:
     com.mall.ai.client: DEBUG
@@ -156,3 +156,17 @@ springdoc:
     path: /swagger-ui.html
     operations-sorter: alpha
     tags-sorter: alpha
+
+# ===== 监控参数 =====
+management:
+  endpoints:
+    web:
+      exposure:
+        # metrics 给 Micrometer 查询，prometheus 给以后接监控用（本地没 Prometheus 也能访问这个端点）
+        include: health,metrics,prometheus,info
+  metrics:
+    distribution:
+      # 不显式开 percentile，Timer 只有 count/sum/max，看不到 p50/p95
+      percentiles:
+        ai.qa.ttft: 0.5,0.95,0.99
+        ai.qa.cost: 0.5,0.95

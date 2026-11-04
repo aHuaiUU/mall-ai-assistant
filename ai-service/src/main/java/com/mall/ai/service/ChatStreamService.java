@@ -3,10 +3,15 @@ package com.mall.ai.service;
 import com.mall.ai.dto.ChatRequestVO;
 import com.mall.ai.dto.KbHitVO;
 import com.mall.ai.dto.MemoryMessageVO;
+import com.mall.ai.filters.TraceIdFilter;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -22,6 +27,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +71,7 @@ public class ChatStreamService {
     private final ChatClient chatClient;
     private final RagService ragService;
     private final ChatService chatService;
+    private final MeterRegistry meterRegistry;
 
     // 会话记忆服务
     private final ConversationMemoryService memoryService;
@@ -91,17 +98,20 @@ public class ChatStreamService {
     /**
      * 打开一条 SSE 连接并开始流式回答。
      *
-     * <p>关键：<b>立刻返回</b>，方法体内不做任何检索/模型调用。
+     * 关键：立刻返回，方法体内不做任何检索/模型调用。
      * 检索要调 embedding 接口 + 查 MySQL，几百毫秒到几秒；放在返回之前，
      * 首字节时间就会被检索拖长，流式的意义就丢了一半。
      */
     public SseEmitter stream(ChatRequestVO request) {
+        // 从 Servlet 线程拿到MDC中的 traceId，用于日志和监控
+        String traceId = MDC.get(TraceIdFilter.MDC_KEY);
+
         String sessionId = request.getSessionId() == null || request.getSessionId().isBlank()
                 ? newSessionId()        // 新会话，生成新会话 ID
                 : request.getSessionId(); // 旧会话，直接使用会话 ID
         String question = request.getMessage();
         SseEmitter emitter = new SseEmitter(timeoutMs);
-        StreamSession session = new StreamSession(emitter, sessionId, question);
+        StreamSession session = new StreamSession(emitter, sessionId, question, traceId);
 
         // 三个回调都必须接：容器侧的完成、超时、错误，都要释放上游，
         // 否则用户已经关页面了，模型还在往下生成、token 还在计费
@@ -117,44 +127,10 @@ public class ChatStreamService {
         return emitter;
     }
 
-    /**
-     * // 准备流式回答，包括检索、拼装上下文、订阅模型流
-     * private void prepareAndStream_backup(StreamSession session, ChatRequestVO request) {
-     * List<KbHitVO> hits;
-     * String userMessage;
-     * // 检索知识库文档，构建提示词上下文
-     * try {
-     * hits = request.isSkipRetrieval() ? List.of() : ragService.retrieve(request.getMessage());
-     * // 复用同步链路的拼装逻辑：两条路径的上下文格式必须一致，
-     * // 否则「同步答得对、流式答错」这种问题会浪费一整天
-     * userMessage = chatService.buildUserMessage(request.getMessage(), hits);
-     * } catch (Exception e) {
-     * log.error("流式问答前置失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
-     * session.finishWithError("RETRIEVE_FAILED", "检索失败，请稍后重试");
-     * session.dispose();
-     * return;
-     * }
-     * <p>
-     * session.hits = hits;
-     * session.contextChars = userMessage.length();
-     * <p>
-     * try {
-     * // chatResponse() 而不是 content()：要多拿 usage（done 帧里的 tokens）。
-     * // content() 只有文本，永远拿不到 token 数。
-     * Flux<ChatResponse> flux = chatClient.prompt()
-     * .user(userMessage)
-     * .stream()
-     * .chatResponse();
-     * session.startStreaming(flux);
-     * } catch (Exception e) {
-     * log.error("流式订阅失败 session={} 原因={}", session.sessionId, e.getMessage(), e);
-     * session.finishWithError("MODEL_UNAVAILABLE", "模型调用失败，请稍后重试");
-     * session.dispose();
-     * }
-     * }
-     **/
-
+    // 准备流式回答，包括检索、拼装上下文、订阅模型流
     private void prepareAndStream(StreamSession session, ChatRequestVO request) {
+        // boundedElastic 线程没有 MDC：手动补上，这个线程后续的日志才有 traceId
+        MDC.put(TraceIdFilter.MDC_KEY, session.traceId);
         String question = request.getMessage();
 
         // 加载会话记忆，从 Redis 读取 JSON 字符串
@@ -209,9 +185,11 @@ public class ChatStreamService {
                     .toList();
 
             Flux<ChatResponse> flux = chatClient.prompt()
-                    .toolContext(Map.of("sessionId", session.sessionId))
                     .messages(historyMessages)
                     .user(userMessage)
+                    .toolContext(Map.of(
+                            "sessionId", session.sessionId,
+                            "traceId", session.traceId))
                     .stream()
                     .chatResponse();
             session.startStreaming(flux);
@@ -247,6 +225,8 @@ public class ChatStreamService {
         private final String sessionId;
         private final String answerId = "a" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         private final String originalQuestion;
+        private final String traceId;
+        private boolean isCached; // 是否缓存命中
 
         /**
          * 终止守卫：done 与 error 互斥，且各只能发一次
@@ -274,18 +254,19 @@ public class ChatStreamService {
         private volatile boolean cacheable;
         private volatile String retrievalQuery; // 检索查询
         private volatile int answerChars;  // 累积最终回答，用于写记忆和写缓存。
-        private volatile Integer promptTokens;
-        private volatile Integer completionTokens;
+        private volatile Integer promptTokens; // 提示词 token数
+        private volatile Integer completionTokens; // 回答 token数
 
         /**
          * 累积最终回答，用于写记忆和写缓存。不用它做展示——展示走 delta 帧
          */
         private final StringBuilder answer = new StringBuilder();
 
-        private StreamSession(SseEmitter emitter, String sessionId,String originalQuestion) {
+        private StreamSession(SseEmitter emitter, String sessionId,String originalQuestion,String traceId) {
             this.emitter = emitter;
             this.sessionId = sessionId;
             this.originalQuestion = originalQuestion;
+            this.traceId = traceId;
         }
 
         void startStreaming(Flux<ChatResponse> flux) {
@@ -366,6 +347,9 @@ public class ChatStreamService {
          * 之后再做落库就处于「连接已结束但仍要写 Redis」的状态，异常时记忆会悄悄丢。
          */
         private void finishWithDone() {
+            String source = isCached ? "cache" : "model";
+            // 缓存未命中
+            isCached = false;
             if (!terminated.compareAndSet(false, true)) {
                 return;
             }
@@ -375,11 +359,16 @@ public class ChatStreamService {
             persistTurn(answerText,true);
 
             Map<String, Object> payload = buildPayload(false);
-            log.info("流式完成 session={} tokens={} 估={} firstTokenMs={} costMs={} hit={} delta={} 字数={} cached=false",
-                    sessionId, payload.get("tokens"), payload.get("tokenEstimated"),
-                    firstTokenMs, elapsedMs(),
-                    hits.size(), deltaCount.get(), answerChars);
+//            log.info("流式完成 session={} tokens={} 估={} firstTokenMs={} costMs={} hit={} delta={} 字数={} cached=false",
+//                    sessionId, payload.get("tokens"), payload.get("tokenEstimated"),
+//                    firstTokenMs, elapsedMs(),
+//                    hits.size(), deltaCount.get(), answerChars
+            log.info("qa_done trace={} session={} source={} firstTokenMs={} costMs={} tokens={} estimated={} hits={} usedContext={} answerChars={}",
+                    traceId, sessionId, source, firstTokenMs, elapsedMs(),
+                    payload.get("tokens"), payload.get("tokenEstimated"), hits.size(), !hits.isEmpty(), answerChars);
 
+            // 记录指标
+            recordMetrics(source, isCached);
             writeEvent("done", payload);
             complete();
         }
@@ -390,6 +379,10 @@ public class ChatStreamService {
             if(!terminated.compareAndSet(false, true)){
                 return;
             }
+            String source = isCached ? "cache" : "model";
+            // 缓存命中
+            isCached = true;
+
             cancelHeartbeat();
             Map<String, Object> payload = buildPayload(true);
             payload.put("hitCount", cached.hitCount());
@@ -397,9 +390,34 @@ public class ChatStreamService {
             log.info("流式完成（缓存回放） session={} firstTokenMs={} costMs={} 字数={}",
                     sessionId, firstTokenMs, elapsedMs(), answerChars);
 
+            // 记录指标
+            recordMetrics(source, isCached);
+
             writeEvent("done", payload);
             complete();
         }
+        // 埋点
+        private void recordMetrics(String source, boolean isCached) {
+            // 关键：缓存命中和真实模型必须分开打 tag。
+            // 缓存回放 firstTokenMs 只有几十毫秒，混在一起会把模型 TTFT 平均值拉低一个数量级，
+            if (firstTokenMs >= 0) {
+                Timer.builder("ai.qa.ttft")
+                        .description("首个 delta 到达耗时")
+                        .tag("source", source)
+                        .register(meterRegistry)
+                        .record(Duration.ofMillis(firstTokenMs));
+            }
+            Timer.builder("ai.qa.cost")
+                    .tag("source", source)
+                    .register(meterRegistry)
+                    .record(Duration.ofMillis(elapsedMs()));
+            Counter.builder("ai.qa.requests")
+                    .tag("source", source)
+                    .tag("usedContext", String.valueOf(!hits.isEmpty()))
+                    .register(meterRegistry)
+                    .increment();
+        }
+
         /**
          * 缓存命中时的回放：分块发 delta，保持前端打字机效果。
          *
@@ -446,7 +464,7 @@ public class ChatStreamService {
                 return;
             }
             try{
-                
+
                 memoryService.appendTurn(sessionId,originalQuestion,answerText);
 
                 if(writeCache && cacheable){
@@ -614,7 +632,7 @@ public class ChatStreamService {
                 d.dispose();
             }
         }
-        // 计算 firstTokenMs
+        // 计算 响应耗时
         private long elapsedMs() {
             return (System.nanoTime() - startNanos) / 1_000_000;
         }

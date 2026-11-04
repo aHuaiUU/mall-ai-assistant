@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.mall.ai.mapper.ToolCallLogMapper">
+
+
+    <select id="statByTool" resultType="java.util.Map">
+            SELECT tool_name AS toolName,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successCount,
+                   SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failCount,
+                   ROUND(AVG(cost_ms), 1) AS avgMs,
+                   MIN(cost_ms) AS minMs,
+                   MAX(cost_ms) AS maxMs
+            FROM tool_call_log
+            WHERE create_time >= #{from}
+            GROUP BY tool_name
+            ORDER BY total DESC
+    </select>
+</mapper>

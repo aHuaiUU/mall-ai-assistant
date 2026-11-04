@@ -54,8 +54,11 @@ public class ProductTool {
                     required = false)
             Integer maxPriceYuan,
             ToolContext toolContext) {
-
+        // 从 toolContext 中获取 sessionId 和 traceId
         Object sid = toolContext == null ? null : toolContext.getContext().get("sessionId");
+        Object tid = toolContext == null ? null : toolContext.getContext().get("traceId");
+        String sessionId = sid == null ? null : sid.toString();
+        String traceId = tid == null ? null : tid.toString();
 
         long start = System.currentTimeMillis();
         // 记录模型传入参数：出现问题时复现模型传入参数
@@ -65,9 +68,10 @@ public class ProductTool {
         try {
             // 参数校验 缺少商品关键字时中断该工具调用
             if (keyword == null || keyword.isBlank()) {
+                long cost = System.currentTimeMillis() - start;
                 String hint = "缺少商品关键词。请告诉我你想要找的商品或品类，例如：手机、笔记本、拉杆箱等";
-                toolCallLogService.record("searchProduct", argsJson, hint,
-                        null, System.currentTimeMillis() - start);
+                // 空关键词，记录模型调用日志，返回提示
+                toolCallLogService.record("searchProduct", argsJson, hint, null, cost, sessionId, traceId);
                 return hint;
             }
 
@@ -94,22 +98,21 @@ public class ProductTool {
             if (items.isEmpty()) {
                 String empty = "没有找到符合要求的商品：[" + keyword.strip() + "]。" +
                         "请检查关键词是否正确，或调整价格范围";
-                // 记录模型查询日志
-                toolCallLogService.record("searchProduct", argsJson, empty,
-                        null, cost);
+                // 空结果 记录模型查询日志
+                toolCallLogService.record("searchProduct", argsJson, empty, null, cost, sessionId, traceId);
                 return empty;
             }
 
             String text = render(page.getTotal(), items);
-            // 记录模型成功查询日志
-            toolCallLogService.record("searchProduct", argsJson, text,
-                    null, cost,sid == null ? null : sid.toString());
+            // 成功 记录模型成功查询日志
+            toolCallLogService.record("searchProduct", argsJson, text, null, cost, sessionId, traceId);
             return text;
         } catch (Exception e) {
             // 任何异常都转成人话返回
             long cost = System.currentTimeMillis() - start;
             log.error("工具调用 searchproduct args: {}, error: {}", argsJson, e.getMessage());
-            toolCallLogService.record("searchProduct", argsJson, null, e.getMessage(), cost);
+            // 异常
+            toolCallLogService.record("searchProduct", argsJson, null, e.getMessage(), cost, sessionId, traceId);
             return "商品服务暂时不可用，请稍后重试。";
         }
 
