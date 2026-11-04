@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.mall.ai.entity.KbChunk;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 
@@ -22,15 +23,5 @@ public interface KbChunkMapper extends BaseMapper<KbChunk> {
      * 为什么不逐条 {@code selectById}：一次检索命中 5 条，逐条查就是 5 次往返。
      * 这里用一条 {@code IN} 查回来，成本差 5 倍。
      */
-    @Select("""
-            <script>
-            SELECT id, doc_id, chunk_index, content, token_count, vector_id, create_time
-            FROM kb_chunk
-            WHERE vector_id IN
-            <foreach collection="vectorIds" item="vid" open="(" separator="," close=")">
-                #{vid}
-            </foreach>
-            </script>
-            """)
-    List<KbChunk> selectByVectorIds(List<String> vectorIds);
+    List<KbChunk> selectByVectorIds(@Param("vectorIds") List<String> vectorIds);
 }

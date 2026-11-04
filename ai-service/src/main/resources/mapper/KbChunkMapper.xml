@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="com.mall.ai.mapper.KbChunkMapper">
+
+    <select id="selectByVectorIds" resultType="com.mall.ai.entity.KbChunk">
+            SELECT id, doc_id, chunk_index, content, token_count, vector_id, create_time
+            FROM kb_chunk
+            WHERE vector_id IN
+            <foreach collection="vectorIds" item="vid" open="(" separator="," close=")">
+                #{vid}
+            </foreach>
+    </select>
+</mapper>
