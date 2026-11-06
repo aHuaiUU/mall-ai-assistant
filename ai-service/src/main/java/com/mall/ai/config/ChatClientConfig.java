@@ -1,5 +1,6 @@
 package com.mall.ai.config;
 
+import com.mall.ai.tool.OrderTool;
 import com.mall.ai.tool.ProductTool;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -28,12 +29,12 @@ public class ChatClientConfig {
     private static final String SYSTEM_PROMPT_PATH = "prompts/system.st";
 
     @Bean
-    public ChatClient chatClient(ChatClient.Builder builder, ProductTool productTool) {
+    public ChatClient chatClient(ChatClient.Builder builder, ProductTool productTool, OrderTool orderTool) {
         String systemPrompt = loadSystemPrompt();
         log.info("系统提示词加载完成，长度：{}", systemPrompt.length());
         return builder
                 .defaultSystem(systemPrompt)
-                .defaultTools(productTool)
+                .defaultTools(productTool, orderTool)
                 .build();
     }
 
