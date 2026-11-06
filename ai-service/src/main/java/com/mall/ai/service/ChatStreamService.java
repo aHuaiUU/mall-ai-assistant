@@ -55,7 +55,7 @@ import java.util.stream.Collectors;
  * {@code stream()} 返回的是<b>冷流</b>：没有订阅者就一个字节都不会流动。
  * 而 {@code toStream().collect()} / {@code blockLast()} 会把流式变成「等全文生成完再一次性返回」，
  * 首字延迟从数百毫秒劣化到全文生成时间——这就是原型项目那个坑。
- *
+ * <p>
  * 为什么所有 send 都走同一把锁
  * {@link SseEmitter#send} 不是线程安全的。心跳线程和模型回调线程并发写会交错出坏帧
  * （SSE 帧边界被破坏，前端 JSON 解析失败，且是偶发、极难复现）。
@@ -72,8 +72,9 @@ public class ChatStreamService {
     private final RagService ragService;
     private final ChatService chatService;
     private final MeterRegistry meterRegistry;
-
-    // 会话记忆服务
+    // 会话归档服务
+    private final ConversationArchiveService archiveService;
+    // 会话记忆服务 redis
     private final ConversationMemoryService memoryService;
     // 问答缓存服务
     private final QaCacheService qaCacheService;
@@ -97,7 +98,7 @@ public class ChatStreamService {
 
     /**
      * 打开一条 SSE 连接并开始流式回答。
-     *
+     * <p>
      * 关键：立刻返回，方法体内不做任何检索/模型调用。
      * 检索要调 embedding 接口 + 查 MySQL，几百毫秒到几秒；放在返回之前，
      * 首字节时间就会被检索拖长，流式的意义就丢了一半。
@@ -143,13 +144,14 @@ public class ChatStreamService {
                 ? question
                 : lastQuestion + " " + question;
         session.retrievalQuery = retrievalQuery;
-        // 当需要RAG检索且会话历史为空时，为true =(!不检索 && 会话历史为空)
+        // 读/写边界分开：
+        //   读：只要「无历史 + 未跳过检索」就查缓存（key 只依赖 question + kbVersion）
+        //   写：还要确认命中都是 POLICY/FAQ（商品类带价格库存，缓存就是答错价）
         boolean cacheAllowed = !request.isSkipRetrieval() && history.isEmpty();
-        if (session.cacheable) {
-            // 缓存命中：直接发送缓存内容，不进行检索
+        if (cacheAllowed) {
             QaCacheService.CachedAnswer cached = qaCacheService.get(question);
             if (cached != null) {
-                log.info("问答缓存命中 session：{} hit：{} length：{}", session.sessionId, cached.answer(), cached.answer().length());
+                log.info("问答缓存命中 session={} 字数={}", session.sessionId, cached.answer().length());
                 // 回放缓存内容：直接发送缓存内容，不进行检索
                 session.replayCached(cached);
                 return;
@@ -262,7 +264,7 @@ public class ChatStreamService {
          */
         private final StringBuilder answer = new StringBuilder();
 
-        private StreamSession(SseEmitter emitter, String sessionId,String originalQuestion,String traceId) {
+        private StreamSession(SseEmitter emitter, String sessionId, String originalQuestion, String traceId) {
             this.emitter = emitter;
             this.sessionId = sessionId;
             this.originalQuestion = originalQuestion;
@@ -342,7 +344,7 @@ public class ChatStreamService {
 
         /**
          * 正常收尾：先落记忆/缓存，再发 done，最后关连接。
-         *
+         * <p>
          * 顺序不能反：done 一发出，前端就断开、onCompletion 会 dispose，
          * 之后再做落库就处于「连接已结束但仍要写 Redis」的状态，异常时记忆会悄悄丢。
          */
@@ -356,7 +358,7 @@ public class ChatStreamService {
             cancelHeartbeat();
 
             String answerText = answer.toString();
-            persistTurn(answerText,true);
+            persistTurn(answerText, true);
 
             Map<String, Object> payload = buildPayload(false);
 //            log.info("流式完成 session={} tokens={} 估={} firstTokenMs={} costMs={} hit={} delta={} 字数={} cached=false",
@@ -371,12 +373,17 @@ public class ChatStreamService {
             recordMetrics(source, isCached);
             writeEvent("done", payload);
             complete();
+
+            // 归档放最后且异步；completionTokens 从 payload 取，拿不到就 null 让归档层估
+            archiveService.archiveTurn(sessionId, null, originalQuestion, answerText,
+                    (Integer) payload.get("completionTokens"));
         }
+
         /**
          * 缓存命中时的收尾。多带 cached / hitCount / titles 三个字段，前端可以显示「来自缓存」。
          */
         private void finishWithCachedDone(QaCacheService.CachedAnswer cached) {
-            if(!terminated.compareAndSet(false, true)){
+            if (!terminated.compareAndSet(false, true)) {
                 return;
             }
             String source = isCached ? "cache" : "model";
@@ -395,7 +402,12 @@ public class ChatStreamService {
 
             writeEvent("done", payload);
             complete();
+
+            // 缓存命中的那一轮也必须归档：否则 Redis 记忆里有、MySQL 里没有，两边不一致
+            archiveService.archiveTurn(sessionId, null, originalQuestion, cached.answer(),
+                    (Integer) payload.get("completionTokens"));
         }
+
         // 埋点
         private void recordMetrics(String source, boolean isCached) {
             // 关键：缓存命中和真实模型必须分开打 tag。
@@ -424,17 +436,17 @@ public class ChatStreamService {
          * <p>逐块走和 onChunk 一样的记账（firstTokenMs / answerChars / deltaCount），
          * 这样 done 帧里的统计口径和真实流式完全一致，不会出现「缓存命中时 tokens=0」。
          */
-        void replayCached(QaCacheService.CachedAnswer cached){
+        void replayCached(QaCacheService.CachedAnswer cached) {
             String text = cached.answer() == null ? "" : cached.answer();
             int chunkSize = 12; // 约 6 ~ 12 个字符，和模型 delta 粒度相当
 
-            for(int from = 0; from < text.length(); from += chunkSize){
-                if(terminated.get()){
+            for (int from = 0; from < text.length(); from += chunkSize) {
+                if (terminated.get()) {
                     return; // 客户端断开，不再往下发
                 }
                 // 取当前块
                 String piece = text.substring(from, Math.min(from + chunkSize, text.length()));
-                if(firstTokenMs < 0){
+                if (firstTokenMs < 0) {
                     // 第一个 delta，记录当前时间作为 firstTokenMs
                     firstTokenMs = elapsedMs();
                 }
@@ -442,43 +454,46 @@ public class ChatStreamService {
                 answer.append(piece);
                 answerChars += piece.length();
                 deltaCount.incrementAndGet();
-                send("delta",Map.of("content",piece));
-                try{
+                send("delta", Map.of("content", piece));
+                try {
                     Thread.sleep(20); // 20ms ≈ 每秒 600 字,接近真实流式手感
-                }catch(InterruptedException e){
+                } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
                 }
             }
 
-            persistTurn(text,false); // 缓存命中也要写记忆，否则「那第二款呢」接不上
+            persistTurn(text, false); // 缓存命中也要写记忆，否则「那第二款呢」接不上
             finishWithCachedDone(cached);
         }
 
         /**
          * 落记忆 + 可选落缓存。失败只记日志：模型已经答完，不能因为写缓存失败让用户看不到答案。
+         *
          * @param writeCache 缓存回放时传 false——刚从缓存读出来又写回去，只会平白延长 TTL
          */
         private void persistTurn(String answerText, boolean writeCache) {
-            if(answerText == null || answerText.isBlank()) {
+            if (answerText == null || answerText.isBlank()) {
                 return;
             }
-            try{
+            try {
 
-                memoryService.appendTurn(sessionId,originalQuestion,answerText);
+                memoryService.appendTurn(sessionId, originalQuestion, answerText);
 
-                if(writeCache && cacheable){
+                if (writeCache && cacheable) {
                     qaCacheService.put(originalQuestion, new QaCacheService.CachedAnswer(
                             answerText, hits.size(), titlesOf(hits), !hits.isEmpty()));
                     log.info("已写入问答缓存 session：{} 字数：{}", sessionId, answerChars);
                 }
-            }catch (Exception e){
+            } catch (Exception e) {
                 // 写 redis 失败，不影响这次回答交付
-                log.warn("记忆或缓存写入失败 session：{} 原因：{}", sessionId, e.getMessage(),e);
+                log.warn("记忆或缓存写入失败 session：{} 原因：{}", sessionId, e.getMessage(), e);
             }
         }
 
-        /** done 帧的公共 payload；cached 决定前端展示口径 */
+        /**
+         * done 帧的公共 payload；cached 决定前端展示口径
+         */
         private Map<String, Object> buildPayload(boolean cached) {
             boolean estimated = completionTokens == null || completionTokens <= 0;
             int tokens = estimated ? answerChars + (promptTokens == null ? 0 : promptTokens)
@@ -501,14 +516,16 @@ public class ChatStreamService {
             payload.put("cached", cached);
             return payload;
         }
+
         // 从检索命中的文档列表里，提取出所有不重复、非空的标题
-        private List<String> titlesOf(List<KbHitVO> hits){
+        private List<String> titlesOf(List<KbHitVO> hits) {
             return hits.stream()
                     .map(KbHitVO::getTitle)
                     .filter(java.util.Objects::nonNull)
                     .distinct()
                     .collect(Collectors.toList());
         }
+
         /**
          * 异常收尾：发 error 事件后关连接。与 done 互斥。
          */
@@ -632,6 +649,7 @@ public class ChatStreamService {
                 d.dispose();
             }
         }
+
         // 计算 响应耗时
         private long elapsedMs() {
             return (System.nanoTime() - startNanos) / 1_000_000;

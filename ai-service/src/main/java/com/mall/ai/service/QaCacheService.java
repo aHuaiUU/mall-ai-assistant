@@ -5,15 +5,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.List;
 
-import static org.apache.commons.codec.digest.DigestUtils.sha256;
 
 /**
  * 问答缓存
@@ -86,8 +85,10 @@ public class QaCacheService {
     }
 
     // 构建缓存key
-    private String buildKey(String question){
-        return KEY_PREFIX + Arrays.toString(sha256(kbVersion() + "|" + normalize(question)));
+    private String buildKey(String question) {
+        // sha256Hex 是 64 字符 hex，可读、可比对；
+        // Arrays.toString(byte[]) 是调试表示，200 字符还带负号
+        return KEY_PREFIX + DigestUtils.sha256Hex(kbVersion() + "|" + normalize(question));
     }
 
     // 对问题进行归一化处理，去空格，转小写
