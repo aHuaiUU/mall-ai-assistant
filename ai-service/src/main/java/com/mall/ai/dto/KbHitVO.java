@@ -30,4 +30,7 @@ public class KbHitVO {
 
     /** 用于日志和调试的截断预览 */
     private String snippet;
+
+    /** 相似度分数（Spring AI 换算后的值：1 - 距离/2）。调阈值全靠它 */
+    private Double score;
 }

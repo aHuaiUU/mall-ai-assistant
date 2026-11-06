@@ -114,8 +114,13 @@ public class RagService {
 
         // 保持向量库给出的顺序：命中越靠前，提示词里越靠前
         List<String> vectorIds = documents.stream().map(Document::getId).toList();
-        Map<String, KbChunk> chunkByVectorId = chunkMapper.selectByVectorIds(vectorIds).stream()
+        Map<String, KbChunk> chunkByVectorId =
+                chunkMapper.selectByVectorIds(vectorIds).stream()
                 .collect(Collectors.toMap(KbChunk::getVectorId, c -> c, (a, b) -> a));
+
+        Map<String, Double> scoreByVectorId = documents.stream()
+                .filter(d -> d.getScore() != null)
+                .collect(Collectors.toMap(Document::getId, Document::getScore, (a, b) -> a));
 
         Set<Long> docIds = chunkByVectorId.values().stream()
                 .map(KbChunk::getDocId)
@@ -135,7 +140,10 @@ public class RagService {
                 log.warn("孤儿向量：vectorId={} 在 kb_chunk 中不存在", vectorId);
                 continue;
             }
-            hits.add(toHit(chunk, docById.get(chunk.getDocId())));
+            // 从向量库的 Document 上取下相似度，挂到命中结果里
+            KbHitVO hit = toHit(chunk, docById.get(chunk.getDocId()));
+            hit.setScore(scoreByVectorId.get(vectorId));
+            hits.add(hit);
         }
         return hits;
     }

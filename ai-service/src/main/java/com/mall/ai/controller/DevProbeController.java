@@ -72,6 +72,7 @@ public class DevProbeController {
             item.put("docId", h.getDocId());
             item.put("title", h.getTitle());
             item.put("chunkIndex", h.getChunkIndex());
+            item.put("score", h.getScore());
             item.put("chars", h.getContent() == null ? 0 : h.getContent().length());
             item.put("snippet", h.getSnippet());
             return item;

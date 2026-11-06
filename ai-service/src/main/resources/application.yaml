@@ -135,12 +135,17 @@ ai:
   # 再挑「召回开始掉、但仍能命中目标段落」的那一档。
   rag:
     top-k: 5
-    similarity-threshold: 0.4
+    similarity-threshold: 0.68
     # 拼进提示词的片段数上限（防止 topK 调大后上下文爆掉）
     max-context-chunks: 5
     # 过滤表格流水句等噪声片段；多取 fetch-multiplier 倍候选再截断
     filter-fragments: true
-    fetch-multiplier: 2
+    # 候选池倍数。实测：商品 341 块 vs 政策 21 块（密度差 16 倍），
+    # KNN 是「先取 K 个最近邻、再按阈值过滤」，倍数=2 时池子只有 10 条，被商品占满，
+    # 政策片段（分数 0.76，比商品 0.69 更高）根本进不了候选。
+    # 提到 8 → 池子 40 条，A01/C03/C05 的政策片段全部回来。
+    # 代价：Redis 多返回 30 条 + 过滤开销，延迟略增；噪声也可能变多，需复跑评测确认净收益。
+    fetch-multiplier: 8
     # 噪声判定：短于该长度、或含 ≥ 阈值个「是/否」token（决策矩阵被抽散的特征）
     min-chunk-chars: 50
     yes-no-token-threshold: 3
