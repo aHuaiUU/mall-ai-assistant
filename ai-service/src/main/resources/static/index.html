@@ -358,26 +358,50 @@ async function kbSearch() {
   const url = `/dev/probe/kb?q=${encodeURIComponent(q)}&k=${$('kbK').value}&threshold=${$('kbTh').value}`;
   const j = await getJson(url);
   const hits = j.hits || [];
+  // 分数分级用来肉眼判断阈值：similarity = 1 - 余弦距离/2，所以 0.50 约等于「余弦相似度 0」
+  const scoreTag = (s) => {
+    if (s === null || s === undefined) return '<span class="tag">score 缺失</span>';
+    const cls = s >= 0.7 ? 'ok' : (s >= 0.5 ? '' : 'err');
+    return `<span class="tag ${cls}">score ${Number(s).toFixed(4)}</span>`;
+  };
   $('kbHits').innerHTML = hits.length === 0
     ? '<pre class="muted">没有命中（阈值可能过高，或知识库为空）</pre>'
-    : `<div class="muted">${j.hitCount} 条命中 · 耗时 ${j.costMs} ms</div>` + hits.map((h, i) => `
+    : `<div class="muted">${j.hitCount} 条命中 · 耗时 ${j.costMs} ms · 阈值 ${j.threshold}</div>` + hits.map((h, i) => `
         <div class="hit">
-          <div class="meta">#${i + 1} · ${h.title || '未命名'} · ${h.chars} 字 · docId=${h.docId ?? '-'} · chunk=${h.chunkIndex ?? '-'}</div>
+          <div class="meta">#${i + 1} · ${h.title || '未命名'} · ${scoreTag(h.score)} <span class="tag">docId=${h.docId ?? '-'}</span> <span class="tag">chunk=${h.chunkIndex ?? '-'}</span> <span class="tag">${h.chars} 字</span></div>
           <div>${escapeHtml((h.snippet || '').slice(0, 260))}</div>
         </div>`).join('');
 }
 
-/** 阈值扫描：同一问题在 0.0~0.8 各档的命中数，第 8 步评测集的雏形 */
+/**
+ * 阈值扫描：前端逐档调用 /dev/probe/kb，而不是用后端的 /kb/sweep。
+ * 好处：扫描区间可以随时改，不用改 Java 代码、不用重启服务。
+ */
 async function kbSweep() {
   const q = $('kbQ').value.trim();
   if (!q) return;
-  const j = await getJson(`/dev/probe/kb/sweep?q=${encodeURIComponent(q)}&k=${$('kbK').value}`);
-  const map = j.hitCountByThreshold || {};
+  const thresholds = [0.40, 0.60, 0.70, 0.75, 0.78, 0.80, 0.82, 0.85, 0.88];
+  const k = $('kbK').value;
+  $('kbHits').innerHTML = '<pre class="muted">扫描中…每档需要一次 embedding 调用</pre>';
+
+  const rows = [];
+  for (const th of thresholds) {
+    const j = await getJson(`/dev/probe/kb?q=${encodeURIComponent(q)}&k=${k}&threshold=${th}`);
+    const hits = j.hits || [];
+    const maxScore = hits.reduce((m, h) => (h.score != null && h.score > m ? h.score : m), 0);
+    rows.push(`<tr style="${th === Number($('kbTh').value) ? 'background:#1b2230' : ''}">
+        <td>${th.toFixed(2)}</td>
+        <td>${hits.length}</td>
+        <td>${hits.length ? maxScore.toFixed(4) : '-'}</td>
+        <td>${hits.length ? escapeHtml((hits[0].title || '') + ' · chunk ' + (hits[0].chunkIndex ?? '-')) : '-'}</td>
+      </tr>`);
+  }
   $('kbHits').innerHTML = `
     <table>
-      <tr><th>阈值</th><th>命中数</th></tr>
-      ${Object.entries(map).map(([th, n]) => `<tr><td>${th}</td><td>${n}</td></tr>`).join('')}
-    </table>`;
+      <tr><th>阈值</th><th>命中数</th><th>最高分</th><th>第一条命中</th></tr>
+      ${rows.join('')}
+    </table>
+    <div class="muted" style="margin-top:6px">判断拐点：命中数开始明显下降的那一档的前一档。分数 &lt; 0.50 的基本是噪声。</div>`;
 }
 
 function escapeHtml(s) {
