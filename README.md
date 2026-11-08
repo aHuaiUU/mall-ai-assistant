@@ -3,7 +3,7 @@
 > 在**不改动链路**的前提下，给现有电商微服务加一层 AI 能力：自然语言找商品、查库存、问订单、答售后。
 
 **技术栈**：Java 21 · Spring Boot 3.5 · Spring AI 1.0 · Spring Cloud OpenFeign · Redis Stack（向量库）· MyBatis-Plus · MySQL
-**状态**：8 步全部完成，30 条评测集 **86.7%** 通过（`docs/eval-report.md`）
+**状态**：8 步全部完成，30 条评测集 **86.7%** 通过（`docs/eval-report.md`）　|　▶ [演示视频（v1.0.0）](https://github.com/aHuaiUU/mall-ai-assistant/releases/tag/v1.0.0)
 
 ## 这个项目解决什么问题
 
@@ -85,6 +85,29 @@ flowchart TB
 3. **无登录体系**：订单查询未校验归属（hmall 的 `GET /orders/{id}` 是内部接口），接入 JWT 后应在工具里补校验。
 4. **工具轮次无代码上限**：目前只靠提示词约束「最多调一次」。
 
+## 运行截图
+
+一个页面集成四块能力：流式问答、知识库、指标、直连探针（`ai-service/src/main/resources/static/index.html`，仅本机使用）。
+
+### 流式问答
+
+![流式问答](docs/images/01-chat.png)
+
+首字 3839ms / 总耗时 4627ms / 命中片段 5 / delta 44 条——逐字输出，不是等全文生成再一次性返回。
+
+### 检索探针：阈值调优的证据
+
+![检索探针](docs/images/03-retrieval.png)
+
+「退机要收哪些费用」在阈值 **0.68** 下命中 5 条，**全部是政策片段**（score 0.70~0.75，`docId=2`）。
+这正是 `fetch-multiplier` 2→8 修复后的效果——修复前 top5 全是商品片段（0.69），政策片段虽然分数更高却进不了候选（原因见 [`docs/pitfalls.md`](docs/pitfalls.md) 第 18 条）。
+
+### 指标面板
+
+![指标面板](docs/images/02-metrics.png)
+
+工具成功率来自 `tool_call_log` 聚合 SQL，TTFT / 耗时来自 Micrometer 的 Prometheus 端点。
+
 ## 目录结构
 
 ```
@@ -110,11 +133,12 @@ mall-ai-assistant/
 ├── docs/
 │   ├── architecture.md              # 施工图：表结构、Redis key、SSE 协议、设计论证
 │   ├── eval-report.md               # 评测方法与数据
-│   └── pitfalls.md                  # 18 条实测踩坑（含环境、契约、评测）
+│   ├── pitfalls.md                  # 29 条实测踩坑（含环境、契约、评测）
+│   └── images/                      # 运行截图（README 引用）
 └── README.md
 ```
 
-> **hmall 不在本仓库**：它是课程基线项目，以独立进程运行（Boot 2.7 + JDK 11），本项目对它只做只读调用 + 一处启动 bug 修复（见 `docs/pitfalls.md` 第 18 条）。
+> **hmall 不在本仓库**：它是课程基线项目，以独立进程运行（Boot 2.7 + JDK 11），本项目对它只做只读调用 + 一处启动 bug 修复（见 `docs/pitfalls.md` 第 14 条）。
 
 ## 快速开始
 
@@ -147,7 +171,7 @@ curl -N -X POST "http://localhost:9091/api/chat/stream" \
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | 模块职责、数据模型、Redis 结构、SSE 事件协议、Feign 契约、设计论证 |
 | [docs/eval-report.md](docs/eval-report.md) | 30 条评测集的设计、判定规则、阈值扫描、性能数据、失败归因 |
-| [docs/pitfalls.md](docs/pitfalls.md) | 18 条实测踩坑：环境、契约、RAG、SSE、可观测性、评测 |
+| [docs/pitfalls.md](docs/pitfalls.md) | 29 条实测踩坑：环境、契约、RAG、SSE、可观测性、评测 |
 
 ## 来源与致谢
 

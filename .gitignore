@@ -12,6 +12,10 @@ data/docs/
 *.pdf
 !docs/**/*.pdf
 
+# 演示视频：10 MB 二进制不进仓库（会让 clone 变重且无法压缩）。
+# 放 GitHub Release 附件 / 或压成 <5 MB 的 GIF 放 docs/images/ 并在 README 里嵌
+*.mp4
+
 # 构建产物
 target/
 build/
