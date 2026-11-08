@@ -482,3 +482,33 @@ public interface ItemClient {
 | SSE 事件 | 事件名被注释，前端靠猜 | 显式 `delta` / `tool` / `done` / `error` |
 | 多实例 | 静态 Map，单机 | 无状态服务 + Redis 持久化记忆 |
 | 配置 | 明文写死 | 环境变量 + `.gitignore` |
+
+---
+
+## 11. 一次完整调用（时序）
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as ai-service
+    participant R as Redis（向量/记忆/缓存）
+    participant L as 大模型
+    participant H as hmall item-service
+
+    U->>A: 500 以内适合跑步的鞋，能退换吗
+    A->>R: 取会话历史 + 查问答缓存（有历史则不查）
+    A->>R: 检索「跑步鞋 / 退换政策」片段（候选池 40，阈值 0.68）
+    R-->>A: topK 片段（阈值过滤 + 噪声剔除）
+    A->>L: 系统提示 + 历史 + <doc> 片段 + 用户问题
+    L-->>A: tool_call: searchProduct(keyword=跑步鞋, maxPriceYuan=500)
+    A->>H: GET /search/list?key=跑步鞋&minPrice=0&maxPrice=50000
+    H-->>A: 商品列表（价格单位：分）
+    A->>L: 工具结果回灌
+    L-->>A: 流式生成回答
+    A-->>U: SSE：delta × N → done（TTFT / tokens / 命中数 / 是否缓存）
+    A->>R: 写会话记忆（原始问题 + 最终回答）
+    A->>M: 异步落库 chat_message / tool_call_log
+```
+
+> **与 5.2 的差异（实测修正）**：5.2 写的「工具轮次上限 5 轮、总超时 60s」目前**只靠提示词约束「最多调一次」，代码层还没有轮次上限**——这是已知限制（见 `docs/pitfalls.md`）。工具由框架内部执行，因此拿不到逐次工具事件，SSE 只发 `delta` / `done` / `error`。
+
